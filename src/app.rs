@@ -54,6 +54,7 @@ pub struct Config {
     pub plan_open: bool,
     pub today_group: Group,
     pub sidebar_open: bool,
+    pub sound: bool,
     pub collapsed: HashSet<String>,
     pub last_view: Option<View>,
     pub stay_in_tray: bool,
@@ -68,6 +69,7 @@ impl Default for Config {
             plan_open: true,
             today_group: Group::Project,
             sidebar_open: true,
+            sound: true,
             collapsed: HashSet::new(),
             last_view: None,
             stay_in_tray: true,
@@ -352,6 +354,9 @@ impl App {
             Action::Complete(id) => {
                 let Some(it) = self.store.items.get(&id).cloned() else { return };
                 self.send(Job::Commands(vec![command("item_close", json!({ "id": id }))]));
+                if self.cfg.sound {
+                    crate::sound::complete();
+                }
                 if !it.is_recurring() {
                     let kids: Vec<String> = self.store.items.values().filter(|i| i.parent_id.as_deref() == Some(&id)).map(|i| i.id.clone()).collect();
                     for k in kids {
@@ -409,7 +414,7 @@ impl App {
                     i.priority = p;
                 }
             }
-            Action::AddTask(d) => self.adder = Some(Adder::new(d)),
+            Action::AddTask(d) => self.adder = Some(Adder::new(d, &self.store)),
             Action::AddSubtask { parent, content } => {
                 if let Some(p) = self.store.items.get(&parent).cloned() {
                     self.add_subtask(&p, content);
@@ -519,7 +524,7 @@ impl App {
                 return;
             }
             if i.consume_key(egui::Modifiers::NONE, Key::Q) || i.consume_key(egui::Modifiers::NONE, Key::A) {
-                self.adder = Some(Adder::new(self.context_defaults()));
+                self.adder = Some(Adder::new(self.context_defaults(), &self.store));
             }
             if i.consume_key(egui::Modifiers::NONE, Key::Slash) || i.consume_key(egui::Modifiers::NONE, Key::F) {
                 self.go_search();
@@ -565,7 +570,7 @@ impl App {
 
     fn run_cmd(&mut self, cmd: Cmd, ctx: &egui::Context) {
         match cmd {
-            Cmd::AddTask => self.adder = Some(Adder::new(AddDefaults::default())),
+            Cmd::AddTask => self.adder = Some(Adder::new(AddDefaults::default(), &self.store)),
             Cmd::Show => {}
             Cmd::OpenTask(id) => self.apply(vec![Action::Open(id)]),
             Cmd::Go(v) => self.go(v),
@@ -604,7 +609,7 @@ impl App {
     /// Defaults for a new task based on the open view.
     pub fn context_defaults(&self) -> AddDefaults {
         match &self.view {
-            View::Today => AddDefaults { due: "today".into(), ..Default::default() },
+            View::Today => AddDefaults { due: Some(Self::today()), ..Default::default() },
             View::Project(id) => AddDefaults { project_id: Some(id.clone()), ..Default::default() },
             View::Label(l) => AddDefaults { labels: vec![l.clone()], ..Default::default() },
             _ => AddDefaults::default(),

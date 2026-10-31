@@ -5,6 +5,8 @@ mod app;
 mod dialogs;
 mod ics;
 mod model;
+mod pickers;
+mod sound;
 mod theme;
 mod tray;
 mod upcoming;

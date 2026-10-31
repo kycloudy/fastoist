@@ -1,371 +1,496 @@
-//! Task editor, quick add, and settings dialogs.
+//! Task dialog, quick add, and settings.
 
 use crate::api::AddExtras;
 use crate::app::{App, Config};
-use crate::model::{Item, Store};
+use crate::model::{Deadline, Due, Item, Store};
+use crate::pickers::{self, DueEdit, Draft, Field, Pop, PopResult};
 use crate::theme::{self, Icon, *};
 use crate::widgets::{self, Action, AddDefaults, RowOpts};
-use eframe::egui::{self, Color32, Key, RichText, Ui, Vec2};
+use eframe::egui::{self, Align2, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use serde_json::{json, Map, Value};
 
+/// Commands that turn `old` into `new` for task `id`: (item_update args, item_move args).
+fn draft_commands(id: &str, old: &Draft, new: &Draft) -> (Map<String, Value>, Option<Value>) {
+    let mut args = Map::new();
+    args.insert("id".into(), json!(id));
+    if new.due != old.due {
+        args.insert("due".into(), new.due.as_ref().map(DueEdit::to_json).unwrap_or(Value::Null));
+    }
+    if new.deadline != old.deadline {
+        args.insert("deadline".into(), new.deadline.map(|d| json!({ "date": d.format("%Y-%m-%d").to_string() })).unwrap_or(Value::Null));
+    }
+    if new.priority != old.priority {
+        args.insert("priority".into(), json!(new.priority));
+    }
+    if new.labels != old.labels {
+        args.insert("labels".into(), json!(new.labels));
+    }
+    let mv = if new.section_id != old.section_id && new.section_id.is_some() {
+        Some(json!({ "id": id, "section_id": new.section_id }))
+    } else if new.project_id != old.project_id || new.section_id != old.section_id {
+        Some(json!({ "id": id, "project_id": new.project_id }))
+    } else {
+        None
+    };
+    (args, mv)
+}
+
+/// Show a draft on the local copy right away, before Todoist confirms it.
+fn apply_draft(it: &mut Item, d: &Draft) {
+    it.project_id = d.project_id.clone();
+    it.section_id = d.section_id.clone();
+    it.priority = d.priority;
+    it.labels = d.labels.clone();
+    it.deadline = d.deadline.map(|d| Deadline { date: d.format("%Y-%m-%d").to_string() });
+    match &d.due {
+        None => it.due = None,
+        Some(DueEdit::At { recur, .. }) => {
+            let v = d.due.as_ref().unwrap().to_json();
+            let mut due = Due { date: v["date"].as_str().unwrap_or_default().to_string(), ..Default::default() };
+            if let Some(r) = recur {
+                due.string = r.clone();
+                due.is_recurring = true;
+            }
+            it.due = Some(due);
+        }
+        // Todoist parses text dates; the next sync shows the result.
+        Some(DueEdit::Text(_)) => {}
+    }
+}
+
 pub struct Editor {
-    orig: Item,
+    id: String,
     content: String,
     description: String,
-    due: String,
-    deadline: String,
-    priority: u8,
-    labels: Vec<String>,
-    project_id: String,
-    section_id: Option<String>,
+    saved_text: (String, String),
+    draft: Draft,
+    saved: Draft,
     new_sub: String,
+    adding_sub: bool,
+    pop: Option<Pop>,
 }
 
 impl Editor {
     pub fn new(it: &Item, _store: &Store) -> Self {
-        let due = match &it.due {
-            Some(d) if !d.string.is_empty() => d.string.clone(),
-            Some(d) => d.date.replace('T', " "),
-            None => String::new(),
-        };
+        let draft = Draft::from_item(it);
         Self {
-            orig: it.clone(),
+            id: it.id.clone(),
             content: it.content.clone(),
             description: it.description.clone(),
-            due,
-            deadline: it.deadline.as_ref().map(|d| d.date.clone()).unwrap_or_default(),
-            priority: it.priority.max(1),
-            labels: it.labels.clone(),
-            project_id: it.project_id.clone(),
-            section_id: it.section_id.clone(),
+            saved_text: (it.content.clone(), it.description.clone()),
+            saved: draft.clone(),
+            draft,
             new_sub: String::new(),
+            adding_sub: false,
+            pop: None,
         }
     }
 
-    fn orig_due(&self) -> String {
-        Editor::new(&self.orig, &Store::default()).due
-    }
-}
-
-pub struct Adder {
-    text: String,
-    description: String,
-    due: String,
-    priority: u8,
-    project_id: Option<String>,
-    section_id: Option<String>,
-    parent_id: Option<String>,
-    labels: Vec<String>,
-    focus: bool,
-}
-
-impl Adder {
-    pub fn new(d: AddDefaults) -> Self {
-        Self {
-            text: String::new(),
-            description: String::new(),
-            due: d.due,
-            priority: 1,
-            project_id: d.project_id,
-            section_id: d.section_id,
-            parent_id: d.parent_id,
-            labels: d.labels,
-            focus: true,
+    /// Send whatever changed since the last save. Todoist's dialog saves as you go.
+    fn save(&mut self, app: &mut App) {
+        let (mut args, mv) = draft_commands(&self.id, &self.saved, &self.draft);
+        let content = self.content.trim().to_string();
+        if !content.is_empty() && content != self.saved_text.0 {
+            args.insert("content".into(), json!(content));
         }
-    }
-}
-
-pub struct Settings {
-    token: String,
-    calendars: String,
-}
-
-impl Settings {
-    pub fn new(cfg: &Config) -> Self {
-        Self { token: cfg.token.clone(), calendars: cfg.calendars.join("\n") }
-    }
-}
-
-fn priority_picker(ui: &mut Ui, p: &mut u8) {
-    let label = format!("P{}", 5 - *p);
-    egui::ComboBox::from_id_salt(ui.scope_id().with("prio"))
-        .selected_text(RichText::new(label).color(priority_color(*p)))
-        .width(70.0)
-        .show_ui(ui, |ui| {
-            for v in [4u8, 3, 2, 1] {
-                ui.selectable_value(p, v, RichText::new(format!("Priority {}", 5 - v)).color(priority_color(v)));
+        if self.description != self.saved_text.1 {
+            args.insert("description".into(), json!(self.description));
+        }
+        if args.len() == 1 && mv.is_none() {
+            return;
+        }
+        if let Some(it) = app.store.items.get_mut(&self.id) {
+            apply_draft(it, &self.draft);
+            if !content.is_empty() {
+                it.content = content.clone();
             }
-        });
-}
-
-fn project_picker(ui: &mut Ui, store: &Store, project: &mut Option<String>, section: &mut Option<String>) {
-    let inbox = store.inbox_id().unwrap_or("").to_string();
-    let current = project.clone().unwrap_or_else(|| inbox.clone());
-    let mut text = if current == inbox { "Inbox".to_string() } else { store.project_name(&current).to_string() };
-    if let Some(s) = section.as_ref().and_then(|s| store.sections.get(s)) {
-        text = format!("{text} / {}", s.name);
+            it.description = self.description.clone();
+        }
+        app.update_task(&self.id, args, mv);
+        self.saved = self.draft.clone();
+        self.saved_text = (if content.is_empty() { self.saved_text.0.clone() } else { content }, self.description.clone());
     }
-    egui::ComboBox::from_id_salt(ui.scope_id().with("proj")).selected_text(format!("# {text}")).width(200.0).show_ui(ui, |ui| {
-        if ui.selectable_label(current == inbox && section.is_none(), "Inbox").clicked() {
-            *project = Some(inbox.clone());
-            *section = None;
-        }
-        for (p, d) in store.project_tree() {
-            let pad = "    ".repeat(d);
-            if ui.selectable_label(current == p.id && section.is_none(), RichText::new(format!("{pad}# {}", p.name)).color(TEXT)).clicked() {
-                *project = Some(p.id.clone());
-                *section = None;
-            }
-            for s in store.sections_of(&p.id) {
-                if ui.selectable_label(section.as_deref() == Some(&s.id), format!("{pad}      {}", s.name)).clicked() {
-                    *project = Some(p.id.clone());
-                    *section = Some(s.id.clone());
-                }
-            }
-        }
-    });
 }
 
-fn label_picker(ui: &mut Ui, store: &Store, labels: &mut Vec<String>) {
-    let text = if labels.is_empty() { "Labels".to_string() } else { labels.join(", ") };
-    ui.menu_button(text, |ui| {
-        ui.set_min_width(180.0);
-        for l in store.sorted_labels() {
-            let mut on = labels.contains(&l.name);
-            if ui.checkbox(&mut on, RichText::new(&l.name).color(named_color(&l.color))).changed() {
-                if on {
-                    labels.push(l.name.clone());
-                } else {
-                    labels.retain(|x| x != &l.name);
-                }
-            }
-        }
-    });
-}
-
-fn date_buttons(ui: &mut Ui, due: &mut String) {
-    for (label, v) in [("Today", "today"), ("Tomorrow", "tomorrow"), ("Next week", "next monday"), ("No date", "")] {
-        if ui.small_button(label).clicked() {
-            *due = v.to_string();
-        }
+fn open_pop(slot: &mut Option<Pop>, field: Field, anchor: Rect, draft: &Draft) {
+    if slot.as_ref().is_some_and(|p| p.field == field) {
+        *slot = None;
+    } else {
+        *slot = Some(Pop::new(field, anchor, draft, App::today()));
     }
 }
 
 fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
     let today = App::today();
     let Some(mut ed) = app.editor.take() else { return };
-    // The task may have been completed or deleted elsewhere.
-    if !app.store.items.contains_key(&ed.orig.id) {
-        return;
-    }
+    let Some(item) = app.store.items.get(&ed.id).cloned() else { return };
     let mut close = false;
-    let mut save = false;
-    let modal = egui::Modal::new(egui::Id::unique("editor")).frame(egui::Frame::new().fill(POPUP).corner_radius(12.0).inner_margin(20.0)).show(ctx, |ui| {
-        ui.set_width(ctx.content_rect().width().min(820.0) - 80.0);
-        let store = &app.store;
-        ui.horizontal(|ui| {
-            let pname = if store.inbox_id() == Some(&ed.orig.project_id) { "Inbox" } else { store.project_name(&ed.orig.project_id) };
-            ui.label(RichText::new(format!("# {pname}")).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
-                    close = true;
-                }
-            });
-        });
-        ui.separator();
-        ui.columns(2, |cols| {
-            let ui = &mut cols[0];
-            ui.horizontal_top(|ui| {
-                let (r, resp) = ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::click());
-                theme::check_circle(ui.painter(), r.center(), 10.0, ed.priority, resp.hovered(), false);
-                if resp.clicked() {
-                    out.push(Action::Complete(ed.orig.id.clone()));
-                    close = true;
-                }
-                ui.add(egui::TextEdit::multiline(&mut ed.content).font(bold_font(18.0)).desired_rows(1).desired_width(f32::INFINITY).frame(egui::Frame::NONE));
-            });
-            ui.add(egui::TextEdit::multiline(&mut ed.description).hint_text("Description").desired_rows(3).desired_width(f32::INFINITY));
-            ui.add_space(10.0);
-            let subs: Vec<Item> = store.subtasks(&ed.orig.id).into_iter().cloned().collect();
-            ui.label(RichText::new(format!("Sub-tasks  {}", subs.len())).font(bold_font(13.0)));
-            for s in &subs {
-                widgets::task_row(ui, store, s, today, &RowOpts { show_project: false, compact: true, ..Default::default() }, out);
-            }
-            let r = ui.add(egui::TextEdit::singleline(&mut ed.new_sub).hint_text("+ Add sub-task").desired_width(f32::INFINITY));
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !ed.new_sub.trim().is_empty() {
-                let content = std::mem::take(&mut ed.new_sub);
-                out.push(Action::AddSubtask { parent: ed.orig.id.clone(), content });
-                r.request_focus();
-            }
+    let screen = ctx.content_rect();
+    let w = (screen.width() - 80.0).min(880.0);
+    let h = (screen.height() - 120.0).min(640.0);
+    let side_w = 260.0;
 
-            let ui = &mut cols[1];
-            let field = |ui: &mut Ui, name: &str| {
-                ui.add_space(6.0);
-                ui.label(RichText::new(name).size(12.0).color(MUTED));
-            };
-            field(ui, "Project");
-            let mut proj = Some(ed.project_id.clone());
-            project_picker(ui, store, &mut proj, &mut ed.section_id);
-            if let Some(p) = proj {
-                ed.project_id = p;
+    let modal = egui::Modal::new(egui::Id::unique("editor"))
+        .frame(egui::Frame::new().fill(Color32::from_rgb(0x1f, 0x1f, 0x1f)).corner_radius(10.0).stroke(Stroke::new(1.0, LINE)))
+        .show(ctx, |ui| {
+            ui.set_width(w);
+            ui.set_height(h);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let store = &app.store;
+
+            // Header: project, close.
+            let (head, _) = ui.allocate_exact_size(Vec2::new(w, 46.0), Sense::hover());
+            let (ic, col, name) = pickers::project_value(store, &Draft::from_item(&item));
+            theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(head.left() + 24.0, head.center().y), Vec2::splat(14.0)), ic, col);
+            ui.painter().text(Pos2::new(head.left() + 38.0, head.center().y), Align2::LEFT_CENTER, name, bold_font(13.0), TEXT);
+            let xr = Rect::from_center_size(Pos2::new(head.right() - 26.0, head.center().y), Vec2::splat(28.0));
+            let xresp = ui.interact(xr, ui.scope_id().with("close"), Sense::click());
+            if xresp.hovered() {
+                ui.painter().rect_filled(xr, 6.0, HOVER);
             }
-            field(ui, "Date");
-            ui.add(egui::TextEdit::singleline(&mut ed.due).hint_text("e.g. tomorrow 3pm, every fri").desired_width(f32::INFINITY));
-            ui.horizontal_wrapped(|ui| date_buttons(ui, &mut ed.due));
-            field(ui, "Deadline");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut ed.deadline).hint_text("YYYY-MM-DD").desired_width(120.0));
-                if !ed.deadline.is_empty() && ui.small_button("Clear").clicked() {
-                    ed.deadline.clear();
-                }
-            });
-            field(ui, "Priority");
-            priority_picker(ui, &mut ed.priority);
-            field(ui, "Labels");
-            label_picker(ui, store, &mut ed.labels);
-        });
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui.button(RichText::new("Delete").color(RED)).clicked() {
-                out.push(Action::Delete(ed.orig.id.clone()));
+            theme::icon(ui.painter(), xr, Icon::Close, MUTED);
+            if xresp.on_hover_text("Close (Esc)").clicked() {
                 close = true;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                    save = true;
+            ui.painter().line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, LINE));
+
+            let body = Rect::from_min_size(Pos2::new(head.left(), head.bottom()), Vec2::new(w, h - 46.0));
+            let side = Rect::from_min_max(Pos2::new(body.right() - side_w, body.top()), body.max);
+            ui.painter().rect_filled(side, egui::CornerRadius { nw: 0, ne: 0, sw: 0, se: 10 }, Color32::from_rgb(0x26, 0x26, 0x26));
+
+            // Left: title, description, sub-tasks.
+            let left = Rect::from_min_max(body.min + Vec2::new(20.0, 16.0), Pos2::new(side.left() - 20.0, body.bottom() - 10.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                egui::ScrollArea::vertical().id_salt("ed_left").auto_shrink([false, false]).show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        let (r, resp) = ui.allocate_exact_size(Vec2::new(26.0, 30.0), Sense::click());
+                        theme::check_circle(ui.painter(), r.center(), 10.0, ed.draft.priority, resp.hovered(), false);
+                        if resp.on_hover_text("Complete").clicked() {
+                            out.push(Action::Complete(ed.id.clone()));
+                            close = true;
+                        }
+                        ui.add(egui::TextEdit::multiline(&mut ed.content).font(bold_font(20.0)).desired_rows(1).desired_width(f32::INFINITY).frame(egui::Frame::NONE).margin(egui::Margin::symmetric(0, 2)));
+                    });
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(34.0);
+                        ui.add(egui::TextEdit::multiline(&mut ed.description).hint_text("Description").desired_rows(1).desired_width(f32::INFINITY).frame(egui::Frame::NONE).margin(egui::Margin::ZERO));
+                    });
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(26.0);
+                        ui.vertical(|ui| {
+                            let subs: Vec<Item> = store.subtasks(&ed.id).into_iter().cloned().collect();
+                            if !subs.is_empty() {
+                                ui.label(RichText::new(format!("Sub-tasks  {}", subs.len())).font(bold_font(13.0)));
+                                for s in &subs {
+                                    widgets::task_row(ui, store, s, today, &RowOpts { show_project: false, compact: true, ..Default::default() }, out);
+                                }
+                            }
+                            if ed.adding_sub {
+                                let r = ui.add(egui::TextEdit::singleline(&mut ed.new_sub).hint_text("Sub-task name").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(8, 6)));
+                                r.request_focus();
+                                if r.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(Key::Enter)) && !ed.new_sub.trim().is_empty() {
+                                        let content = std::mem::take(&mut ed.new_sub).trim().to_string();
+                                        out.push(Action::AddSubtask { parent: ed.id.clone(), content });
+                                    } else {
+                                        ed.adding_sub = false;
+                                    }
+                                }
+                            } else {
+                                let (r, resp) = ui.allocate_exact_size(Vec2::new(140.0, 30.0), Sense::click());
+                                let col = if resp.hovered() { ACCENT_TEXT } else { MUTED };
+                                theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 8.0, r.center().y), Vec2::splat(12.0)), Icon::Plus, col);
+                                ui.painter().text(Pos2::new(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, "Add sub-task", bold_font(13.0), col);
+                                if resp.clicked() {
+                                    ed.adding_sub = true;
+                                }
+                            }
+                        });
+                    });
+                });
+            });
+
+            // Right: properties.
+            let inner = side.shrink2(Vec2::new(16.0, 14.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
+                let d = &ed.draft;
+                let open = ed.pop.as_ref().map(|p| p.field);
+                let rows = [
+                    (Field::Project, "Project", Some(pickers::project_value(store, d))),
+                    (Field::Date, "Date", d.due.as_ref().map(|x| { let (t, c) = x.label(today); (Icon::Calendar, c, t) })),
+                    (Field::Deadline, "Deadline", d.deadline.map(|x| { let (t, c) = widgets::deadline_label(x, today); (Icon::Deadline, c, t) })),
+                    (Field::Priority, "Priority", Some((Icon::Flag, priority_color(d.priority), format!("P{}", 5 - d.priority)))),
+                    (Field::Labels, "Labels", (!d.labels.is_empty()).then(|| (Icon::Tag, MUTED, d.labels.join(", ")))),
+                ];
+                let mut clicked = None;
+                for (f, label, value) in rows {
+                    let r = pickers::side_row(ui, label, value, open == Some(f));
+                    if r.clicked() {
+                        clicked = Some((f, r.rect));
+                    }
                 }
-                if ui.button("Cancel").clicked() {
-                    close = true;
+                if let Some((f, rect)) = clicked {
+                    open_pop(&mut ed.pop, f, rect, &ed.draft);
                 }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("Delete task").color(RED)).frame(false)).clicked() {
+                        out.push(Action::Delete(ed.id.clone()));
+                        close = true;
+                    }
+                });
             });
         });
-        if ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl) {
-            save = true;
+
+    if let Some(pop) = ed.pop.as_mut() {
+        match pickers::show(ctx, &app.store, pop, &mut ed.draft, today) {
+            PopResult::Open => {}
+            PopResult::Changed => ed.save(app),
+            PopResult::Close => {
+                ed.pop = None;
+                ed.save(app);
+            }
         }
-    });
-    if modal.should_close() {
+    } else if modal.should_close() {
         close = true;
     }
-    if save {
-        save_editor(app, &ed);
-        close = true;
-    }
-    if !close {
+    if close {
+        ed.save(app);
+    } else {
         app.editor = Some(ed);
     }
 }
 
-fn save_editor(app: &mut App, ed: &Editor) {
-    let o = &ed.orig;
-    let mut args = Map::new();
-    args.insert("id".into(), json!(o.id));
-    let it = app.store.items.get_mut(&o.id);
-    let Some(it) = it else { return };
-    if ed.content.trim() != o.content {
-        args.insert("content".into(), json!(ed.content.trim()));
-        it.content = ed.content.trim().to_string();
-    }
-    if ed.description != o.description {
-        args.insert("description".into(), json!(ed.description));
-        it.description = ed.description.clone();
-    }
-    if ed.priority != o.priority {
-        args.insert("priority".into(), json!(ed.priority));
-        it.priority = ed.priority;
-    }
-    if ed.labels != o.labels {
-        args.insert("labels".into(), json!(ed.labels));
-        it.labels = ed.labels.clone();
-    }
-    if ed.due.trim() != ed.orig_due() {
-        if ed.due.trim().is_empty() {
-            args.insert("due".into(), Value::Null);
-            it.due = None;
-        } else {
-            args.insert("due".into(), json!({ "string": ed.due.trim() }));
+pub struct Adder {
+    text: String,
+    description: String,
+    show_desc: bool,
+    draft: Draft,
+    parent_id: Option<String>,
+    menu: bool,
+    pop: Option<Pop>,
+    focus: bool,
+}
+
+impl Adder {
+    pub fn new(d: AddDefaults, store: &Store) -> Self {
+        Self {
+            text: String::new(),
+            description: String::new(),
+            show_desc: false,
+            draft: Draft {
+                project_id: d.project_id.unwrap_or_else(|| store.inbox_id().unwrap_or("").to_string()),
+                section_id: d.section_id,
+                due: d.due.map(|date| DueEdit::At { date, time: None, recur: None }),
+                deadline: None,
+                priority: 1,
+                labels: d.labels,
+            },
+            parent_id: d.parent_id,
+            menu: false,
+            pop: None,
+            focus: true,
         }
     }
-    let old_deadline = o.deadline.as_ref().map(|d| d.date.clone()).unwrap_or_default();
-    if ed.deadline.trim() != old_deadline {
-        if ed.deadline.trim().is_empty() {
-            args.insert("deadline".into(), Value::Null);
-            it.deadline = None;
-        } else {
-            args.insert("deadline".into(), json!({ "date": ed.deadline.trim() }));
-            it.deadline = Some(crate::model::Deadline { date: ed.deadline.trim().to_string() });
-        }
+}
+
+/// A rounded chip showing one chosen property. Returns its response.
+fn chip(ui: &mut Ui, ic: Icon, col: Color32, text: &str) -> egui::Response {
+    let g = ui.painter().layout_no_wrap(text.to_string(), font(12.5), col);
+    let size = Vec2::new(g.size().x + 34.0, 26.0);
+    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    ui.painter().rect(r, 6.0, if resp.hovered() { HOVER } else { POPUP }, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 13.0, r.center().y), Vec2::splat(13.0)), ic, col);
+    ui.painter().galley(Pos2::new(r.left() + 24.0, r.center().y - g.size().y / 2.0), g, col);
+    resp
+}
+
+fn menu_row(ui: &mut Ui, ic: Icon, name: &str, key: &str) -> bool {
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, 4.0, HOVER);
     }
-    let mv = if ed.section_id != o.section_id && ed.section_id.is_some() {
-        it.project_id = ed.project_id.clone();
-        it.section_id = ed.section_id.clone();
-        Some(json!({ "id": o.id, "section_id": ed.section_id }))
-    } else if ed.project_id != o.project_id || (ed.section_id.is_none() && o.section_id.is_some()) {
-        it.project_id = ed.project_id.clone();
-        it.section_id = None;
-        Some(json!({ "id": o.id, "project_id": ed.project_id }))
-    } else {
-        None
-    };
-    app.update_task(&o.id, args, mv);
+    theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 16.0, r.center().y), Vec2::splat(16.0)), ic, MUTED);
+    ui.painter().text(Pos2::new(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, name, font(13.5), TEXT);
+    if !key.is_empty() {
+        let kr = Rect::from_center_size(Pos2::new(r.right() - 16.0, r.center().y), Vec2::new(16.0, 16.0));
+        ui.painter().rect_filled(kr, 3.0, Color32::from_rgb(0x3a, 0x3a, 0x3a));
+        ui.painter().text(kr.center(), Align2::CENTER_CENTER, key, bold_font(10.5), MUTED);
+    }
+    resp.clicked()
 }
 
 fn adder_ui(app: &mut App, ctx: &egui::Context) {
+    let today = App::today();
     let Some(mut ad) = app.adder.take() else { return };
     let mut close = false;
     let mut submit = false;
-    let modal = egui::Modal::new(egui::Id::unique("adder")).frame(egui::Frame::new().fill(POPUP).corner_radius(12.0).inner_margin(16.0)).show(ctx, |ui| {
-        ui.set_width(ctx.content_rect().width().min(640.0) - 60.0);
-        let store = &app.store;
-        let r = ui.add(egui::TextEdit::singleline(&mut ad.text).hint_text("Task name").font(bold_font(16.0)).frame(egui::Frame::NONE).desired_width(f32::INFINITY));
-        if std::mem::take(&mut ad.focus) {
-            r.request_focus();
-        }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-            submit = true;
-        }
-        ui.add(egui::TextEdit::multiline(&mut ad.description).hint_text("Description").frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut ad.due).hint_text("Date").desired_width(150.0));
-            priority_picker(ui, &mut ad.priority);
-            label_picker(ui, store, &mut ad.labels);
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            project_picker(ui, store, &mut ad.project_id, &mut ad.section_id);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ok = !ad.text.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new(RichText::new("Add task").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                    submit = true;
+    let screen = ctx.content_rect();
+    let w = (screen.width() - 80.0).min(600.0);
+    let pos = Pos2::new(screen.center().x - w / 2.0 + 60.0, screen.top() + 100.0);
+    let mut plus_rect = Rect::NOTHING;
+    let mut open: Option<(Field, Rect)> = None;
+
+    let area = egui::Area::new(egui::Id::unique("adder")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+        egui::Frame::new()
+            .fill(POPUP)
+            .stroke(Stroke::new(1.0, LINE))
+            .corner_radius(10.0)
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(140) })
+            .show(ui, |ui| {
+                ui.set_width(w);
+                ui.horizontal(|ui| {
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                    plus_rect = r;
+                    ui.painter().rect_filled(r, 6.0, if resp.hovered() || ad.menu { Color32::from_rgb(0x44, 0x44, 0x44) } else { Color32::from_rgb(0x38, 0x38, 0x38) });
+                    theme::icon(ui.painter(), r, Icon::Plus, TEXT);
+                    if resp.on_hover_text("Add details").clicked() {
+                        ad.menu = !ad.menu;
+                        ad.pop = None;
+                    }
+                    let tw = ui.available_width() - 36.0;
+                    let r = ui.add(egui::TextEdit::singleline(&mut ad.text).hint_text("Task name").font(font(16.0)).frame(egui::Frame::NONE).desired_width(tw).margin(egui::Margin::symmetric(4, 4)));
+                    if std::mem::take(&mut ad.focus) {
+                        r.request_focus();
+                    }
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        submit = true;
+                    }
+                    if widgets::icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
+                        close = true;
+                    }
+                });
+                if ad.show_desc {
+                    ui.horizontal(|ui| {
+                        ui.add_space(36.0);
+                        ui.add(egui::TextEdit::multiline(&mut ad.description).hint_text("Description").frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
+                    });
                 }
-                if ui.button("Cancel").clicked() {
-                    close = true;
+                // Chips for chosen properties.
+                let d = ad.draft.clone();
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(36.0);
+                    if let Some(due) = &d.due {
+                        let (t, c) = due.label(today);
+                        let r = chip(ui, Icon::Calendar, c, &t);
+                        if r.clicked() {
+                            open = Some((Field::Date, r.rect));
+                        }
+                    }
+                    if d.priority > 1 {
+                        let r = chip(ui, Icon::Flag, priority_color(d.priority), &format!("P{}", 5 - d.priority));
+                        if r.clicked() {
+                            open = Some((Field::Priority, r.rect));
+                        }
+                    }
+                    if let Some(dl) = d.deadline {
+                        let (t, c) = widgets::deadline_label(dl, today);
+                        let r = chip(ui, Icon::Deadline, c, &t);
+                        if r.clicked() {
+                            open = Some((Field::Deadline, r.rect));
+                        }
+                    }
+                    for l in &d.labels {
+                        let r = chip(ui, Icon::Tag, MUTED, l);
+                        if r.clicked() {
+                            open = Some((Field::Labels, r.rect));
+                        }
+                    }
+                    let (ic, col, name) = pickers::project_value(&app.store, &d);
+                    let r = chip(ui, ic, col, &name);
+                    if r.clicked() {
+                        open = Some((Field::Project, r.rect));
+                    }
+                });
+            });
+    });
+
+    // The "+" menu.
+    if ad.menu {
+        let mr = egui::Area::new(egui::Id::unique("adder_menu")).order(egui::Order::Foreground).fixed_pos(plus_rect.left_bottom() + Vec2::new(0.0, 6.0)).show(ctx, |ui| {
+            egui::Frame::new().fill(POPUP).stroke(Stroke::new(1.0, LINE)).corner_radius(8.0).inner_margin(6.0).show(ui, |ui| {
+                ui.set_width(270.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let rows = [
+                    (Icon::Section, "Description", "", None),
+                    (Icon::Hash, "Project", "#", Some(Field::Project)),
+                    (Icon::Calendar, "Date", "", Some(Field::Date)),
+                    (Icon::Flag, "Priority", "!", Some(Field::Priority)),
+                    (Icon::Deadline, "Deadline", "{", Some(Field::Deadline)),
+                    (Icon::Tag, "Labels", "@", Some(Field::Labels)),
+                ];
+                for (ic, name, key, field) in rows {
+                    if menu_row(ui, ic, name, key) {
+                        ad.menu = false;
+                        match field {
+                            None => ad.show_desc = true,
+                            Some(f) => open = Some((f, Rect::from_min_size(plus_rect.left_bottom(), Vec2::ZERO))),
+                        }
+                    }
                 }
             });
         });
-    });
-    if modal.should_close() {
+        let outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx.pointer_interact_pos().is_some_and(|p| !mr.response.rect.contains(p) && !plus_rect.contains(p));
+        if outside || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            ad.menu = false;
+        }
+    }
+
+    if let Some((f, r)) = open {
+        open_pop(&mut ad.pop, f, r, &ad.draft);
+    }
+    let mut pop_open = false;
+    if let Some(pop) = ad.pop.as_mut() {
+        pop_open = true;
+        if let PopResult::Close = pickers::show(ctx, &app.store, pop, &mut ad.draft, today) {
+            ad.pop = None;
+            ad.focus = true;
+        }
+    } else if !ad.menu && ctx.input(|i| i.key_pressed(Key::Escape)) {
         close = true;
     }
+    // A click outside an empty quick add closes it, as in Todoist.
+    if !pop_open && !ad.menu && ad.text.trim().is_empty() && ctx.input(|i| i.pointer.any_pressed()) && ctx.pointer_interact_pos().is_some_and(|p| !area.response.rect.contains(p)) {
+        close = true;
+    }
+
     if submit && !ad.text.trim().is_empty() {
+        let d = &ad.draft;
         let extras = AddExtras {
             description: ad.description.trim().to_string(),
-            project_id: ad.project_id.clone(),
-            section_id: ad.section_id.clone(),
+            project_id: Some(d.project_id.clone()).filter(|p| !p.is_empty()),
+            section_id: d.section_id.clone(),
             parent_id: ad.parent_id.clone(),
-            priority: (ad.priority > 1).then_some(ad.priority),
-            due_string: ad.due.clone(),
-            deadline: String::new(),
-            labels: ad.labels.clone(),
+            priority: (d.priority > 1).then_some(d.priority),
+            due: d.due.as_ref().map(DueEdit::to_json),
+            deadline: d.deadline.map(|x| x.format("%Y-%m-%d").to_string()),
+            labels: d.labels.clone(),
         };
         app.add_task(ad.text.trim().to_string(), extras);
         // Stay open for the next task, like Todoist's quick add.
         ad.text.clear();
         ad.description.clear();
+        ad.show_desc = false;
         ad.focus = true;
     }
     if !close {
         app.adder = Some(ad);
+    }
+}
+
+pub struct Settings {
+    token: String,
+    calendars: String,
+    sound: bool,
+}
+
+impl Settings {
+    pub fn new(cfg: &Config) -> Self {
+        Self { token: cfg.token.clone(), calendars: cfg.calendars.join("\n"), sound: cfg.sound }
     }
 }
 
@@ -389,7 +514,8 @@ fn settings_ui(app: &mut App, ctx: &egui::Context) {
         if ui.checkbox(&mut app.cfg.stay_in_tray, "Stay running in tray").changed() {
             app.save_config();
         }
-        ui.add_space(10.0);
+        ui.checkbox(&mut s.sound, "Play a sound when I complete a task");
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
             if ui.button("Full resync").clicked() {
                 app.send(crate::api::Job::FullSync);
@@ -415,6 +541,8 @@ fn settings_ui(app: &mut App, ctx: &egui::Context) {
         if urls != app.cfg.calendars {
             app.set_calendars(urls);
         }
+        app.cfg.sound = s.sound;
+        app.save_config();
         close = true;
     }
     if !close {

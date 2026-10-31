@@ -124,7 +124,7 @@ fn today_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, LINE));
             flat_rows(ui, store, &overdue, today, true, out);
         }
-        let defaults = AddDefaults { due: "today".into(), ..Default::default() };
+        let defaults = AddDefaults { due: Some(today), ..Default::default() };
         match group {
             Group::Project => {
                 let mut projects: Vec<&str> = due.iter().map(|i| i.project_id.as_str()).collect();

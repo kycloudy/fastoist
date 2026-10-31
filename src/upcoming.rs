@@ -95,6 +95,7 @@ pub fn show(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             };
             if widgets::icon_button(ui, Icon::Right, "Next").clicked() {
                 app.anchor = shift(app.anchor, 1);
+                app.scroll_week = true;
             }
             if ui.button("Today").clicked() {
                 app.anchor = today;
@@ -102,6 +103,7 @@ pub fn show(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             }
             if widgets::icon_button(ui, Icon::Left, "Previous").clicked() {
                 app.anchor = shift(app.anchor, -1);
+                app.scroll_week = true;
             }
         });
     });
@@ -120,7 +122,6 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
     let start = week_start(first, start_day);
     let weeks = 6;
     app.want_completed(start, start + Duration::days(weeks * 7 - 1));
-    let store = &app.store;
 
     let full = ui.available_rect_before_wrap();
     let head_h = 24.0;
@@ -132,7 +133,12 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
     }
     ui.allocate_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), head_h)), Sense::hover());
 
-    egui::ScrollArea::vertical().id_salt("month").auto_shrink([false, false]).show(ui, |ui| {
+    let mut sa = egui::ScrollArea::vertical().id_salt("month").auto_shrink([false, false]);
+    if std::mem::take(&mut app.scroll_week) {
+        sa = sa.vertical_scroll_offset(0.0);
+    }
+    let store = &app.store;
+    sa.show(ui, |ui| {
         let w = ui.available_width();
         let col_w = w / 7.0;
         let cell_h = ((full.height() - head_h) / weeks as f32).max(128.0);
@@ -200,7 +206,7 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
                 // Double-click an empty spot to add a task on that day.
                 let bg = ui.interact(cell, egui::Id::unique(("mbg", d)), Sense::click());
                 if bg.double_clicked() {
-                    out.push(Action::AddTask(AddDefaults { due: d.format("%b %-d %Y").to_string(), ..Default::default() }));
+                    out.push(Action::AddTask(AddDefaults { due: Some(d), ..Default::default() }));
                 }
             }
         }
@@ -384,8 +390,13 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
 fn list(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut Vec<Action>) {
     let start = week_start(app.anchor, start_day).max(today);
     let days = 21;
+    // Today, Previous, and Next jump back to the top of the list.
+    let mut sa = egui::ScrollArea::vertical().id_salt("ulist").auto_shrink([false, false]);
+    if std::mem::take(&mut app.scroll_week) {
+        sa = sa.vertical_scroll_offset(0.0);
+    }
     let store = &app.store;
-    egui::ScrollArea::vertical().id_salt("ulist").auto_shrink([false, false]).show(ui, |ui| {
+    sa.show(ui, |ui| {
         let w = ui.available_width();
         let cw = (w - 64.0).min(820.0);
         let pad = ((w - cw) / 2.0).max(16.0);
@@ -421,7 +432,7 @@ fn list(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                     for it in &items {
                         widgets::task_row(ui, store, it, today, &RowOpts { show_due: it.due_at().and_then(|a| a.time).is_some(), ..Default::default() }, out);
                     }
-                    widgets::add_row(ui, AddDefaults { due: d.format("%b %-d %Y").to_string(), ..Default::default() }, out);
+                    widgets::add_row(ui, AddDefaults { due: Some(d), ..Default::default() }, out);
                     let zone = Rect::from_min_max(Pos2::new(ui.min_rect().left(), zone_top - 28.0), Pos2::new(ui.min_rect().right(), ui.cursor().top()));
                     drop_zone(ui, zone, egui::Id::unique(("lday", d)), d, None, out);
                 }
@@ -490,7 +501,7 @@ pub fn plan_panel(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             for it in &a {
                 widgets::task_row(ui, store, it, today, &RowOpts { compact: true, ..Default::default() }, out);
             }
-            widgets::add_row(ui, AddDefaults { due: "today".into(), ..Default::default() }, out);
+            widgets::add_row(ui, AddDefaults { due: Some(today), ..Default::default() }, out);
         });
         ui.add_space(8.0);
         egui::CollapsingHeader::new(egui::RichText::new(format!("Unscheduled with deadline  {}", b.len())).font(bold_font(14.0))).default_open(true).show(ui, |ui| {

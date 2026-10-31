@@ -22,6 +22,7 @@ pub const GREEN: Color32 = Color32::from_rgb(0x25, 0xb8, 0x4c);
 pub const ORANGE: Color32 = Color32::from_rgb(0xff, 0x9a, 0x14);
 pub const PURPLE: Color32 = Color32::from_rgb(0xa9, 0x70, 0xff);
 pub const RED: Color32 = Color32::from_rgb(0xff, 0x70, 0x66);
+pub const BLUE_SOFT: Color32 = Color32::from_rgb(0x52, 0x97, 0xff);
 pub const EVENT: Color32 = Color32::from_rgb(0xf5, 0xcf, 0x3d);
 
 /// Todoist priority 4 is "p1" (highest).
@@ -122,6 +123,8 @@ pub fn install(ctx: &egui::Context) {
         s.text_styles.insert(egui::TextStyle::Small, font(12.0));
         s.text_styles.insert(egui::TextStyle::Heading, bold_font(26.0));
     });
+    // egui's default wheel step (40 px per notch) feels slow next to native Windows apps.
+    ctx.options_mut(|o| o.input_options.line_scroll_speed = 110.0);
 }
 
 fn visuals() -> egui::Visuals {
@@ -168,6 +171,13 @@ pub enum Icon {
     Repeat,
     Plus,
     Close,
+    Dot,
+    Sun,
+    Sofa,
+    Slash,
+    Section,
+    Flag,
+    Clock,
     Sidebar,
     Left,
     Right,
@@ -242,6 +252,36 @@ pub fn icon(p: &Painter, r: Rect, icon: Icon, color: Color32) {
                 s,
             ));
             p.add(PathShape::line(vec![at(2.5, -6.5), at(5.6, -2.6), at(6.8, -6.0)], s));
+        }
+        Icon::Dot => {
+            p.circle_stroke(c, 3.0 * k, s);
+        }
+        Icon::Sun => {
+            p.circle_stroke(c, 3.2 * k, s);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                p.line_segment([at(5.0 * a.cos(), 5.0 * a.sin()), at(7.0 * a.cos(), 7.0 * a.sin())], s);
+            }
+        }
+        Icon::Sofa => {
+            p.add(PathShape::line(vec![at(-7.0, 4.5), at(-7.0, -1.0), at(-4.5, -1.0), at(-4.5, 1.5), at(4.5, 1.5), at(4.5, -1.0), at(7.0, -1.0), at(7.0, 4.5), at(-7.0, 4.5)], s));
+            p.add(PathShape::line(vec![at(-4.5, -1.0), at(-4.5, -4.5), at(4.5, -4.5), at(4.5, -1.0)], s));
+        }
+        Icon::Slash => {
+            p.circle_stroke(c, 6.0 * k, s);
+            p.line_segment([at(-4.2, 4.2), at(4.2, -4.2)], s);
+        }
+        Icon::Section => {
+            p.rect_stroke(rr(-6.0, -5.0, 6.0, 5.0), 1.5, s, StrokeKind::Middle);
+            p.line_segment([at(-6.0, -1.5), at(6.0, -1.5)], s);
+        }
+        Icon::Flag => {
+            p.add(PathShape::convex_polygon(vec![at(-4.5, -6.5), at(5.5, -6.5), at(3.0, -3.0), at(5.5, 0.5), at(-4.5, 0.5)], color, Stroke::NONE));
+            p.line_segment([at(-4.5, -6.5), at(-4.5, 7.0)], Stroke::new(1.6, color));
+        }
+        Icon::Clock => {
+            p.circle_stroke(c, 6.0 * k, s);
+            p.add(PathShape::line(vec![at(0.0, -3.5), at(0.0, 0.0), at(2.5, 1.5)], s));
         }
         Icon::Close => {
             p.line_segment([at(-4.5, -4.5), at(4.5, 4.5)], s);

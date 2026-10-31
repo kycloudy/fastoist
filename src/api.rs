@@ -21,8 +21,8 @@ pub struct AddExtras {
     pub section_id: Option<String>,
     pub parent_id: Option<String>,
     pub priority: Option<u8>,
-    pub due_string: String,
-    pub deadline: String,
+    pub due: Option<Value>,
+    pub deadline: Option<String>,
     pub labels: Vec<String>,
 }
 
@@ -172,11 +172,11 @@ fn extras_commands(task: &Value, x: &AddExtras, typed_project: bool) -> Vec<Valu
     if let Some(p) = x.priority.filter(|_| !typed_priority) {
         upd.insert("priority".into(), json!(p));
     }
-    if !x.due_string.trim().is_empty() && !typed_due {
-        upd.insert("due".into(), json!({ "string": x.due_string.trim() }));
+    if let Some(due) = x.due.as_ref().filter(|_| !typed_due) {
+        upd.insert("due".into(), due.clone());
     }
-    if !x.deadline.trim().is_empty() {
-        upd.insert("deadline".into(), json!({ "date": x.deadline.trim() }));
+    if let Some(d) = &x.deadline {
+        upd.insert("deadline".into(), json!({ "date": d }));
     }
     if !x.labels.is_empty() {
         let mut labels: Vec<String> = task
