@@ -6,11 +6,15 @@ mod dialogs;
 mod ics;
 mod model;
 mod theme;
+mod tray;
 mod upcoming;
 mod views;
 mod widgets;
 
 fn main() -> eframe::Result {
+    if !tray::claim_instance() {
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Fastoist")

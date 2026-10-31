@@ -34,6 +34,17 @@ Download `fastoist.exe` from the latest [Actions build](../../actions/workflows/
 | Toggle sidebar | `M` |
 | Back / forward | `Alt+Left` / `Alt+Right` |
 
+## System tray
+
+Fastoist puts an icon in the Windows notification area. Closing the window sends the app to the tray, so it keeps syncing. Left-click the icon to show the window. Right-click it for the menu:
+
+- **Add task** (`Ctrl+Space`) and **Show Fastoist** (`Win+Alt+S`). Both work from any app. If another program already uses a hotkey, the menu item still works.
+- **Today** and **Tomorrow**: your tasks and your calendar events (from the iCal feeds in Settings), in time order. Overdue tasks appear under Today. Click a task to open it.
+- **Inbox**, **Today**, **Upcoming**, **Filters and Labels**, **Completed**, and a **Favorites** submenu.
+- **Settings**, **Stay running in tray** (turn it off and closing the window quits), and **Quit Fastoist**.
+
+Starting Fastoist a second time shows the running window instead of opening another copy.
+
 ## Data
 
 Fastoist keeps its settings and an offline copy of your account in `%LOCALAPPDATA%\Fastoist`. The copy makes startup instant. The API token is stored in `config.json` in that folder, readable by your Windows user account. You can also set the `TODOIST_TOKEN` environment variable instead.
