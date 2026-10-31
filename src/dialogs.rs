@@ -385,7 +385,11 @@ fn settings_ui(app: &mut App, ctx: &egui::Context) {
         ui.add_space(10.0);
         ui.label("Calendar feeds (iCal URLs, one per line)");
         ui.add(egui::TextEdit::multiline(&mut s.calendars).hint_text("https://calendar.google.com/calendar/ical/…/basic.ics").desired_rows(3).desired_width(f32::INFINITY));
-        ui.add_space(14.0);
+        ui.add_space(10.0);
+        if ui.checkbox(&mut app.cfg.stay_in_tray, "Stay running in tray").changed() {
+            app.save_config();
+        }
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Full resync").clicked() {
                 app.send(crate::api::Job::FullSync);

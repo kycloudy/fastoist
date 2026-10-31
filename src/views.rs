@@ -293,6 +293,27 @@ fn search_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
     });
 }
 
+/// Tasks completed in the last 30 days, newest due date first. The circle brings one back.
+fn completed_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
+    let store = &app.store;
+    let mut done: Vec<&Item> = store.completed.values().collect();
+    done.sort_by(|a, b| b.due_date().cmp(&a.due_date()).then_with(|| a.content.cmp(&b.content)));
+    column(ui, "completed", |ui| {
+        heading(ui, "Completed");
+        ui.add_space(8.0);
+        for it in done {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+            let c = Pos2::new(rect.left() + 14.0, rect.center().y);
+            theme::check_circle(ui.painter(), c, 8.0, it.priority, resp.hovered(), true);
+            ui.painter().text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, &it.content, font(14.0), MUTED);
+            if resp.on_hover_text("Mark as not done").clicked() {
+                out.push(Action::Uncomplete(it.id.clone()));
+            }
+            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, LINE));
+        }
+    });
+}
+
 pub fn show(app: &mut App, v: &View, ui: &mut Ui, out: &mut Vec<Action>) {
     match v {
         View::Inbox => {
@@ -305,6 +326,7 @@ pub fn show(app: &mut App, v: &View, ui: &mut Ui, out: &mut Vec<Action>) {
         View::Label(n) => label_view(app, n, ui, out),
         View::FiltersLabels => filters_labels(app, ui, out),
         View::Search => search_view(app, ui, out),
+        View::Completed => completed_view(app, ui, out),
         View::Upcoming => {}
     }
 }

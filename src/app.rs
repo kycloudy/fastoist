@@ -4,6 +4,7 @@ use crate::api::{self, add_command, command, AddExtras, Job, Msg};
 use crate::dialogs::{Adder, Editor, Settings};
 use crate::model::{Due, Item, Store};
 use crate::theme::{self, Icon, *};
+use crate::tray::{self, Cmd, Tray};
 use crate::widgets::{self, Action, AddDefaults};
 use chrono::{Datelike, Local, NaiveDate, NaiveTime};
 use eframe::egui::{self, Align2, Color32, Key, Pos2, Rect, Sense, Vec2};
@@ -21,6 +22,7 @@ pub enum View {
     Upcoming,
     FiltersLabels,
     Search,
+    Completed,
     Project(String),
     Filter(String),
     Label(String),
@@ -54,6 +56,7 @@ pub struct Config {
     pub sidebar_open: bool,
     pub collapsed: HashSet<String>,
     pub last_view: Option<View>,
+    pub stay_in_tray: bool,
 }
 
 impl Default for Config {
@@ -67,6 +70,7 @@ impl Default for Config {
             sidebar_open: true,
             collapsed: HashSet::new(),
             last_view: None,
+            stay_in_tray: true,
         }
     }
 }
@@ -119,6 +123,10 @@ pub struct App {
     last_save: Instant,
     completed_range: Option<(NaiveDate, NaiveDate)>,
     title: String,
+    tray: Option<Tray>,
+    tray_at: Option<Instant>,
+    hidden: bool,
+    quitting: bool,
 }
 
 impl App {
@@ -161,6 +169,10 @@ impl App {
             last_save: Instant::now(),
             completed_range: None,
             title: String::new(),
+            tray: native_window(cc).and_then(|h| Tray::new(&cc.egui_ctx, h)),
+            tray_at: None,
+            hidden: false,
+            quitting: false,
             cfg,
         };
         if !app.cfg.token.is_empty() {
@@ -222,6 +234,10 @@ impl App {
                 self.scroll_week = true;
             }
             View::Search => self.focus_search = true,
+            View::Completed => {
+                let today = Self::today();
+                self.want_completed(today - chrono::Duration::days(30), today);
+            }
             _ => {}
         }
         self.cfg.last_view = Some(self.view.clone());
@@ -473,6 +489,7 @@ impl App {
             View::Upcoming => "Upcoming".into(),
             View::FiltersLabels => "Filters & Labels".into(),
             View::Search => "Search".into(),
+            View::Completed => "Completed".into(),
             View::Project(id) => self.store.project_name(id).to_string(),
             View::Filter(id) => self.store.filters.get(id).map(|f| f.name.clone()).unwrap_or_default(),
             View::Label(n) => n.clone(),
@@ -511,6 +528,58 @@ impl App {
                 self.cfg.sidebar_open = !self.cfg.sidebar_open;
             }
         });
+    }
+
+    /// Handle tray clicks and hotkeys, keep the menu current, and send a closed window to the tray.
+    fn tray_tick(&mut self, ctx: &egui::Context) {
+        let Some(tray) = &self.tray else { return };
+        for cmd in tray.poll() {
+            if cmd.needs_window() {
+                self.hidden = false;
+            }
+            self.run_cmd(cmd, ctx);
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && self.cfg.stay_in_tray && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.save_config();
+            if let Some(t) = &self.tray {
+                t.hide();
+            }
+            self.hidden = true;
+        }
+        let due = self.tray_at.is_none_or(|t| t.elapsed() > Duration::from_secs(2));
+        if due {
+            let today = Self::today();
+            let entries = tray::model(&self.store, today, self.cfg.stay_in_tray);
+            let tip = tray::tooltip(&self.store, today);
+            if let Some(t) = &mut self.tray {
+                t.update(entries, tip);
+            }
+            self.tray_at = Some(Instant::now());
+        }
+        if self.hidden {
+            // Keep the menu current while no window shows.
+            ctx.request_repaint_after(Duration::from_secs(10));
+        }
+    }
+
+    fn run_cmd(&mut self, cmd: Cmd, ctx: &egui::Context) {
+        match cmd {
+            Cmd::AddTask => self.adder = Some(Adder::new(AddDefaults::default())),
+            Cmd::Show => {}
+            Cmd::OpenTask(id) => self.apply(vec![Action::Open(id)]),
+            Cmd::Go(v) => self.go(v),
+            Cmd::Settings => self.settings = Some(Settings::new(&self.cfg)),
+            Cmd::ToggleStay => {
+                self.cfg.stay_in_tray = !self.cfg.stay_in_tray;
+                self.save_config();
+                self.tray_at = None;
+            }
+            Cmd::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
     }
 
     fn go_search(&mut self) {
@@ -780,6 +849,15 @@ impl App {
     }
 }
 
+/// The native window handle, which the tray needs to show and hide the window.
+fn native_window(cc: &eframe::CreationContext<'_>) -> Option<usize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match cc.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as usize),
+        _ => None,
+    }
+}
+
 fn section_title(ui: &mut egui::Ui, title: &str) {
     ui.add_space(14.0);
     ui.horizontal(|ui| {
@@ -793,6 +871,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_msgs();
+        self.tray_tick(&ctx);
         self.keys(&ctx);
         let title = format!("{} – Fastoist", self.view_title());
         if title != self.title {
