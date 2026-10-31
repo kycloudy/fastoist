@@ -1,6 +1,6 @@
 # Fastoist
 
-A fast, native Todoist client for Windows. One 8 MB `.exe`, no installer, no browser engine. It syncs with your real Todoist account through the Todoist API.
+A fast, native Todoist client for Windows. One 9 MB `.exe`, no installer, no browser engine. It syncs with your real Todoist account through the Todoist API.
 
 ## Get it
 
