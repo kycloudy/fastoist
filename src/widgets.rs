@@ -30,7 +30,7 @@ pub struct AddDefaults {
     pub project_id: Option<String>,
     pub section_id: Option<String>,
     pub parent_id: Option<String>,
-    pub due: String,
+    pub due: Option<NaiveDate>,
     pub labels: Vec<String>,
 }
 
