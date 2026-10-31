@@ -22,6 +22,9 @@ pub enum Action {
     AddSubtask { parent: String, content: String },
     /// Show the week that holds this day in Upcoming.
     ShowWeek(NaiveDate),
+    /// Open a Google event to change it.
+    OpenEvent(String),
+    MoveEvent { key: String, date: NaiveDate, time: Option<NaiveTime> },
     Go(crate::app::View),
 }
 
@@ -33,6 +36,10 @@ pub struct AddDefaults {
     pub due: Option<NaiveDate>,
     pub labels: Vec<String>,
 }
+
+/// Drag payload for moving a Google event. Holds the event key.
+#[derive(Clone, Debug)]
+pub struct EventDrag(pub String);
 
 /// Drag payload for moving a task onto a calendar day or time.
 #[derive(Clone, Debug)]
@@ -381,10 +388,31 @@ pub fn task_chip(ui: &mut Ui, rect: Rect, item: &Item, done: bool, show_time: bo
     task_menu(&resp, item, today, out);
 }
 
-pub fn event_chip(ui: &mut Ui, rect: Rect, ev: &Event) {
+pub fn event_color(ev: &Event) -> Color32 {
+    ev.color.map(|c| Color32::from_rgb(c[0], c[1], c[2])).unwrap_or(EVENT)
+}
+
+/// Make an event draggable and clickable when Fastoist can change it.
+pub fn event_interact(ui: &mut Ui, rect: Rect, ev: &Event, out: &mut Vec<Action>) {
+    let when = if ev.all_day { "All day".to_string() } else { format!("{} – {}", fmt_time(ev.start.time()), fmt_time(ev.end.time())) };
+    if ev.editable {
+        let id = ui.scope_id().with(("ev", ev.key(), rect.min.x as i32, rect.min.y as i32));
+        let resp = ui.interact(rect, id, Sense::click_and_drag());
+        resp.dnd_set_drag_payload(EventDrag(ev.key()));
+        if resp.clicked() {
+            out.push(Action::OpenEvent(ev.key()));
+        }
+        resp.on_hover_text(format!("{}\n{when}", ev.title));
+    } else {
+        let id = ui.scope_id().with(("ev", &ev.title, rect.min.x as i32, rect.min.y as i32));
+        ui.interact(rect, id, Sense::hover()).on_hover_text(format!("{}\n{when}", ev.title));
+    }
+}
+
+pub fn event_chip(ui: &mut Ui, rect: Rect, ev: &Event, out: &mut Vec<Action>) {
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 4.0, Color32::from_rgb(0x2b, 0x2b, 0x2b));
-    p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, rect.height() - 6.0)), 1.0, EVENT);
+    p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, rect.height() - 6.0)), 1.0, event_color(ev));
     let mut right = rect.right() - 6.0;
     if !ev.all_day && rect.width() > 150.0 {
         let g = galley_one(ui, &fmt_time(ev.start.time()), font(11.5), MUTED);
@@ -397,12 +425,7 @@ pub fn event_chip(ui: &mut Ui, rect: Rect, ev: &Event) {
     job.wrap.max_rows = 1;
     let g = ui.painter().layout_job(job);
     p.galley(Pos2::new(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, TEXT);
-    let id = ui.scope_id().with(("ev", &ev.title, rect.min.x as i32, rect.min.y as i32));
-    ui.interact(rect, id, Sense::hover()).on_hover_text(format!(
-        "{}\n{}",
-        ev.title,
-        if ev.all_day { "All day".to_string() } else { format!("{} – {}", fmt_time(ev.start.time()), fmt_time(ev.end.time())) }
-    ));
+    event_interact(ui, rect, ev, out);
 }
 
 /// Order tasks the way Todoist's date views do: timed first by time, then by priority.

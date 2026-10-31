@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod dialogs;
+mod gcal;
 mod ics;
 mod model;
 mod pickers;

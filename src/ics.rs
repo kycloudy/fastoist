@@ -234,7 +234,7 @@ pub fn parse(text: &str, from: NaiveDate, to: NaiveDate) -> Vec<Event> {
             if seen.insert((r.uid.clone() + &r.summary, s), ()).is_some() {
                 continue;
             }
-            out.push(Event { title: r.summary.clone(), start: s, end: s + len, all_day });
+            out.push(Event::new(r.summary.clone(), s, s + len, all_day));
         }
     }
     out.sort_by_key(|e| e.start);

@@ -142,13 +142,46 @@ pub struct SyncResponse {
     pub temp_id_mapping: HashMap<String, String>,
 }
 
-/// A calendar event read from an iCal feed.
+/// A calendar event from an iCal feed or from Google Calendar.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Event {
     pub title: String,
     pub start: NaiveDateTime,
+    /// For all-day events this is the first day after the event.
     pub end: NaiveDateTime,
     pub all_day: bool,
+    /// Google event id. Empty for iCal events.
+    #[serde(default)]
+    pub id: String,
+    /// Google calendar id. Empty for iCal events.
+    #[serde(default)]
+    pub cal: String,
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
+    /// True when Fastoist can move or change the event.
+    #[serde(default)]
+    pub editable: bool,
+}
+
+impl Event {
+    pub fn new(title: String, start: NaiveDateTime, end: NaiveDateTime, all_day: bool) -> Self {
+        Self { title, start, end, all_day, id: String::new(), cal: String::new(), color: None, editable: false }
+    }
+
+    /// Identifies a Google event across calendars.
+    pub fn key(&self) -> String {
+        format!("{}|{}", self.cal, self.id)
+    }
+}
+
+/// A Google calendar the user can show.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GCal {
+    pub id: String,
+    pub name: String,
+    pub color: [u8; 3],
+    pub writable: bool,
+    pub primary: bool,
 }
 
 /// Where a task's due date falls, in local time.
@@ -205,7 +238,12 @@ pub struct Store {
     pub sections: HashMap<String, Section>,
     pub labels: HashMap<String, Label>,
     pub filters: HashMap<String, Filter>,
+    /// Everything shown: iCal events plus visible Google events. Rebuilt, never saved.
+    #[serde(skip)]
     pub events: Vec<Event>,
+    pub ical: Vec<Event>,
+    pub gevents: Vec<Event>,
+    pub gcals: Vec<GCal>,
     /// Task ids that match each saved filter query, keyed by query.
     pub filter_results: HashMap<String, Vec<String>>,
     /// Completed tasks fetched for the calendar, keyed by id.

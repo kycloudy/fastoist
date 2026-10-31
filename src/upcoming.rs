@@ -3,7 +3,7 @@
 use crate::app::{App, Layout};
 use crate::model::{Event, Item, Store};
 use crate::theme::{Icon, *};
-use crate::widgets::{self, task_chip, Action, AddDefaults, RowOpts, TaskDrag};
+use crate::widgets::{self, task_chip, Action, AddDefaults, EventDrag, RowOpts, TaskDrag};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -39,11 +39,14 @@ fn events_on(store: &Store, d: NaiveDate) -> Vec<&Event> {
 /// Accept a dragged task on `rect`, scheduling it on `date` (and `time` if given).
 fn drop_zone(ui: &Ui, rect: Rect, id: egui::Id, date: NaiveDate, time: Option<NaiveTime>, out: &mut Vec<Action>) {
     let resp = ui.interact(rect, id, Sense::hover());
-    if resp.dnd_hover_payload::<TaskDrag>().is_some() {
+    if resp.dnd_hover_payload::<TaskDrag>().is_some() || resp.dnd_hover_payload::<EventDrag>().is_some() {
         ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
     }
     if let Some(p) = resp.dnd_release_payload::<TaskDrag>() {
         out.push(Action::Schedule { id: p.0.clone(), date: Some(date), time: time.map(Some) });
+    }
+    if let Some(p) = resp.dnd_release_payload::<EventDrag>() {
+        out.push(Action::MoveEvent { key: p.0.clone(), date, time });
     }
 }
 
@@ -55,6 +58,15 @@ fn drag_preview(ui: &Ui, store: &Store) {
             let g = painter.layout_no_wrap(it.content.clone(), font(12.5), TEXT);
             let r = Rect::from_min_size(pos + Vec2::new(12.0, 8.0), g.size() + Vec2::new(16.0, 8.0));
             painter.rect_filled(r, 4.0, chip_fill(it.priority));
+            painter.galley(r.min + Vec2::new(8.0, 4.0), g, TEXT);
+        }
+    }
+    if let (Some(p), Some(pos)) = (egui::DragAndDrop::payload::<EventDrag>(ctx), ctx.pointer_interact_pos()) {
+        if let Some(e) = store.gevents.iter().find(|e| e.key() == p.0) {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag")));
+            let g = painter.layout_no_wrap(e.title.clone(), font(12.5), TEXT);
+            let r = Rect::from_min_size(pos + Vec2::new(12.0, 8.0), g.size() + Vec2::new(16.0, 8.0));
+            painter.rect_filled(r, 4.0, widgets::event_color(e).gamma_multiply(0.7));
             painter.galley(r.min + Vec2::new(8.0, 4.0), g, TEXT);
         }
     }
@@ -73,6 +85,14 @@ pub fn show(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
             ui.add_space(14.0);
+            if app.google_signed_in() && app.store.gcals.iter().any(|c| c.writable) {
+                let d = if app.anchor < today { today } else { app.anchor };
+                let d = if app.cfg.layout == Layout::Month && d.month() != today.month() { d.with_day(1).unwrap_or(d) } else { d };
+                if ui.button("New event").clicked() {
+                    app.event_editor = Some(crate::dialogs::EventEditor::new_on(d, &app.store));
+                }
+                ui.add_space(6.0);
+            }
             let plan_n = plan_items(app).0.len() + plan_items(app).1.len();
             let plan = ui.add(egui::Button::new(format!("Plan: {plan_n}")).selected(app.cfg.plan_open));
             if plan.clicked() {
@@ -191,7 +211,7 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
                     if n >= shown {
                         break;
                     }
-                    widgets::event_chip(ui, chip(y), e);
+                    widgets::event_chip(ui, chip(y), e, out);
                     y += CHIP_H + 2.0;
                     n += 1;
                 }
@@ -293,7 +313,7 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
             if y + CHIP_H > ad_top + ad_h {
                 break;
             }
-            widgets::event_chip(ui, chip(y), e);
+            widgets::event_chip(ui, chip(y), e, out);
             y += CHIP_H + 2.0;
         }
     }
@@ -367,13 +387,14 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                     Block::Ev(e) => {
                         let painter = ui.painter_at(r);
                         painter.rect_filled(r, 4.0, Color32::from_rgb(0x2b, 0x2b, 0x2b));
-                        painter.rect_filled(Rect::from_min_size(r.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, r.height() - 6.0)), 1.0, EVENT);
+                        painter.rect_filled(Rect::from_min_size(r.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, r.height() - 6.0)), 1.0, widgets::event_color(e));
                         let g = painter.layout(e.title.clone(), bold_font(12.0), TEXT, r.width() - 14.0);
                         let th = g.size().y;
                         painter.galley(r.min + Vec2::new(10.0, 4.0), g, TEXT);
                         if r.height() > th + 22.0 {
                             painter.text(r.min + Vec2::new(10.0, 6.0 + th), Align2::LEFT_TOP, format!("{}–{}", widgets::fmt_time(e.start.time()), widgets::fmt_time(e.end.time())), font(11.5), MUTED);
                         }
+                        widgets::event_interact(ui, r, e, out);
                     }
                 }
             }
@@ -427,7 +448,7 @@ fn list(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                     let zone_top = ui.cursor().top();
                     for e in events_on(store, d) {
                         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
-                        widgets::event_chip(ui, r, e);
+                        widgets::event_chip(ui, r, e, out);
                     }
                     for it in &items {
                         widgets::task_row(ui, store, it, today, &RowOpts { show_due: it.due_at().and_then(|a| a.time).is_some(), ..Default::default() }, out);

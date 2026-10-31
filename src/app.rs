@@ -1,8 +1,9 @@
 //! App state, sidebar, navigation, and how user actions reach Todoist.
 
 use crate::api::{self, add_command, command, AddExtras, Job, Msg};
-use crate::dialogs::{Adder, Editor, Settings};
-use crate::model::{Due, Item, Store};
+use crate::dialogs::{Adder, Editor, EventEditor, Settings};
+use crate::gcal::Creds;
+use crate::model::{Due, Event, Item, Store};
 use crate::theme::{self, Icon, *};
 use crate::tray::{self, Cmd, Tray};
 use crate::widgets::{self, Action, AddDefaults};
@@ -58,6 +59,12 @@ pub struct Config {
     pub collapsed: HashSet<String>,
     pub last_view: Option<View>,
     pub stay_in_tray: bool,
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    /// Set while signed in to Google.
+    pub google_refresh: String,
+    /// Google calendars the user turned off.
+    pub google_hidden: Vec<String>,
 }
 
 impl Default for Config {
@@ -73,6 +80,10 @@ impl Default for Config {
             collapsed: HashSet::new(),
             last_view: None,
             stay_in_tray: true,
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            google_refresh: String::new(),
+            google_hidden: Vec::new(),
         }
     }
 }
@@ -120,6 +131,10 @@ pub struct App {
     pub editor: Option<Editor>,
     pub adder: Option<Adder>,
     pub settings: Option<Settings>,
+    pub event_editor: Option<EventEditor>,
+    pub google_waiting: bool,
+    ctx: egui::Context,
+    mtx: Sender<Msg>,
     pub pending_filters: HashSet<String>,
     dirty: bool,
     last_save: Instant,
@@ -146,9 +161,10 @@ impl App {
         let (jtx, jrx) = channel();
         let (mtx, mrx) = channel();
         let ctx = cc.egui_ctx.clone();
+        let mtx2 = mtx.clone();
         api::spawn(cfg.token.clone(), store.sync_token.clone(), jrx, mtx, move || ctx.request_repaint());
         let view = cfg.last_view.clone().unwrap_or(View::Today);
-        let app = Self {
+        let mut app = Self {
             store,
             jobs: jtx,
             msgs: mrx,
@@ -166,6 +182,10 @@ impl App {
             editor: None,
             adder: None,
             settings: None,
+            event_editor: None,
+            google_waiting: false,
+            ctx: cc.egui_ctx.clone(),
+            mtx: mtx2,
             pending_filters: HashSet::new(),
             dirty: false,
             last_save: Instant::now(),
@@ -177,11 +197,90 @@ impl App {
             quitting: false,
             cfg,
         };
+        app.rebuild_events();
         if !app.cfg.token.is_empty() {
             app.send(Job::Sync);
             app.send(Job::Calendars(app.cfg.calendars.clone()));
         }
+        if let Some(creds) = app.google_creds() {
+            app.send(Job::GoogleSet { creds: Some(creds), hidden: app.cfg.google_hidden.clone() });
+        }
         app
+    }
+
+    pub fn google_creds(&self) -> Option<Creds> {
+        (!self.cfg.google_refresh.is_empty()).then(|| Creds {
+            client_id: self.cfg.google_client_id.clone(),
+            client_secret: self.cfg.google_client_secret.clone(),
+            refresh: self.cfg.google_refresh.clone(),
+        })
+    }
+
+    pub fn google_signed_in(&self) -> bool {
+        !self.cfg.google_refresh.is_empty()
+    }
+
+    /// Open the browser sign-in on its own thread so the app keeps running.
+    pub fn google_sign_in(&mut self, client_id: String, client_secret: String) {
+        if self.google_waiting || client_id.trim().is_empty() {
+            return;
+        }
+        self.cfg.google_client_id = client_id.trim().to_string();
+        self.cfg.google_client_secret = client_secret.trim().to_string();
+        self.save_config();
+        self.google_waiting = true;
+        let (tx, ctx, id, secret) = (self.mtx.clone(), self.ctx.clone(), self.cfg.google_client_id.clone(), self.cfg.google_client_secret.clone());
+        std::thread::spawn(move || {
+            let r = crate::gcal::sign_in(&crate::gcal::agent(), &id, &secret);
+            let _ = tx.send(Msg::GoogleSignedIn(r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn google_sign_out(&mut self) {
+        self.cfg.google_refresh.clear();
+        self.store.gevents.clear();
+        self.store.gcals.clear();
+        self.send(Job::GoogleSet { creds: None, hidden: Vec::new() });
+        self.save_config();
+        self.rebuild_events();
+    }
+
+    pub fn google_toggle_calendar(&mut self, id: &str) {
+        if let Some(i) = self.cfg.google_hidden.iter().position(|h| h == id) {
+            self.cfg.google_hidden.remove(i);
+        } else {
+            self.cfg.google_hidden.push(id.to_string());
+        }
+        self.save_config();
+        self.rebuild_events();
+        self.send(Job::GoogleSync { hidden: self.cfg.google_hidden.clone() });
+    }
+
+    /// Combine iCal events with the visible Google events. A Google event hides an iCal copy of itself.
+    pub fn rebuild_events(&mut self) {
+        let g: Vec<Event> = self.store.gevents.iter().filter(|e| !self.cfg.google_hidden.contains(&e.cal)).cloned().collect();
+        let seen: HashSet<(String, chrono::NaiveDateTime)> = if self.google_signed_in() { self.store.gevents.iter().map(|e| (e.title.clone(), e.start)).collect() } else { HashSet::new() };
+        let mut all: Vec<Event> = self.store.ical.iter().filter(|e| !seen.contains(&(e.title.clone(), e.start))).cloned().collect();
+        all.extend(g);
+        all.sort_by_key(|e| e.start);
+        self.store.events = all;
+    }
+
+    /// Move a Google event to `date`, at `time` if given. Keeps its length.
+    pub fn move_event(&mut self, key: &str, date: NaiveDate, time: Option<NaiveTime>) {
+        let Some(e) = self.store.gevents.iter_mut().find(|e| e.key() == key && e.editable) else { return };
+        let len = e.end - e.start;
+        let start = if e.all_day { date.and_time(NaiveTime::MIN) } else { date.and_time(time.unwrap_or_else(|| e.start.time())) };
+        if start == e.start {
+            return;
+        }
+        e.start = start;
+        e.end = start + len;
+        let job = Job::GoogleUpdate { cal: e.cal.clone(), id: e.id.clone(), title: None, start: e.start, end: e.end, all_day: e.all_day };
+        self.send(job);
+        self.rebuild_events();
+        self.dirty = true;
     }
 
     pub fn send(&self, job: Job) {
@@ -203,7 +302,8 @@ impl App {
         self.cfg.calendars = urls;
         self.save_config();
         if self.cfg.calendars.is_empty() {
-            self.store.events.clear();
+            self.store.ical.clear();
+            self.rebuild_events();
         } else {
             self.send(Job::Calendars(self.cfg.calendars.clone()));
         }
@@ -295,8 +395,36 @@ impl App {
                     self.store.completed = items.into_iter().map(|i| (i.id.clone(), i)).collect();
                 }
                 Msg::Events(ev) => {
-                    self.store.events = ev;
+                    self.store.ical = ev;
+                    self.rebuild_events();
                     self.dirty = true;
+                }
+                Msg::GoogleCalendars(c) => {
+                    self.store.gcals = c;
+                    self.dirty = true;
+                }
+                Msg::GoogleEvents(ev) => {
+                    self.store.gevents = ev;
+                    self.rebuild_events();
+                    self.dirty = true;
+                }
+                Msg::GoogleExpired => {
+                    self.cfg.google_refresh.clear();
+                    self.store.gevents.clear();
+                    self.save_config();
+                    self.rebuild_events();
+                    self.toast = Some(Toast { text: crate::gcal::EXPIRED.into(), error: true, undo: None, until: Instant::now() + Duration::from_secs(8) });
+                }
+                Msg::GoogleSignedIn(r) => {
+                    self.google_waiting = false;
+                    match r {
+                        Ok(creds) => {
+                            self.cfg.google_refresh = creds.refresh.clone();
+                            self.save_config();
+                            self.send(Job::GoogleSet { creds: Some(creds), hidden: self.cfg.google_hidden.clone() });
+                        }
+                        Err(e) => self.toast = Some(Toast { text: e, error: true, undo: None, until: Instant::now() + Duration::from_secs(8) }),
+                    }
                 }
                 Msg::QuickAddDone { temp_id } => {
                     self.store.items.remove(&temp_id);
@@ -420,6 +548,12 @@ impl App {
                     self.add_subtask(&p, content);
                 }
             }
+            Action::OpenEvent(key) => {
+                if let Some(e) = self.store.gevents.iter().find(|e| e.key() == key && e.editable) {
+                    self.event_editor = Some(EventEditor::edit(e));
+                }
+            }
+            Action::MoveEvent { key, date, time } => self.move_event(&key, date, time),
             Action::Go(v) => self.go(v),
             Action::ShowWeek(d) => {
                 self.cfg.layout = Layout::Week;

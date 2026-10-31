@@ -444,12 +444,12 @@ mod tests {
         s.items.insert("a".into(), task("a", "Midterm", "2026-10-31"));
         s.items.insert("b".into(), task("b", "Essay & notes", "2026-11-01"));
         s.items.insert("c".into(), task("c", "Late one", "2026-10-30"));
-        s.events.push(Event {
-            title: "halloween".into(),
-            start: NaiveDateTime::parse_from_str("2026-10-31 16:00", "%Y-%m-%d %H:%M").unwrap(),
-            end: NaiveDateTime::parse_from_str("2026-10-31 17:00", "%Y-%m-%d %H:%M").unwrap(),
-            all_day: false,
-        });
+        s.events.push(Event::new(
+            "halloween".into(),
+            NaiveDateTime::parse_from_str("2026-10-31 16:00", "%Y-%m-%d %H:%M").unwrap(),
+            NaiveDateTime::parse_from_str("2026-10-31 17:00", "%Y-%m-%d %H:%M").unwrap(),
+            false,
+        ));
         let m = texts(&model(&s, day("2026-10-31"), true));
         let start = m.iter().position(|t| t == "[Today]").unwrap();
         // The timed event comes first, then tasks without a time.

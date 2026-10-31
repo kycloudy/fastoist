@@ -2,11 +2,12 @@
 
 use crate::api::AddExtras;
 use crate::app::{App, Config};
-use crate::model::{Deadline, Due, Item, Store};
+use crate::model::{Deadline, Due, Event, Item, Store};
 use crate::pickers::{self, DueEdit, Draft, Field, Pop, PopResult};
 use crate::theme::{self, Icon, *};
 use crate::widgets::{self, Action, AddDefaults, RowOpts};
 use eframe::egui::{self, Align2, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde_json::{json, Map, Value};
 
 /// Commands that turn `old` into `new` for task `id`: (item_update args, item_move args).
@@ -486,11 +487,63 @@ pub struct Settings {
     token: String,
     calendars: String,
     sound: bool,
+    google_id: String,
+    google_secret: String,
 }
 
 impl Settings {
     pub fn new(cfg: &Config) -> Self {
-        Self { token: cfg.token.clone(), calendars: cfg.calendars.join("\n"), sound: cfg.sound }
+        Self {
+            token: cfg.token.clone(),
+            calendars: cfg.calendars.join("\n"),
+            sound: cfg.sound,
+            google_id: cfg.google_client_id.clone(),
+            google_secret: cfg.google_client_secret.clone(),
+        }
+    }
+}
+
+fn google_section(app: &mut App, s: &mut Settings, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.label("Google Calendar");
+        if !app.google_signed_in() {
+            ui.hyperlink_to(RichText::new("Create client ID").size(12.0), "https://console.cloud.google.com/apis/credentials");
+        }
+    });
+    if app.google_signed_in() {
+        let account = app.store.gcals.iter().find(|c| c.primary).map(|c| c.id.clone()).unwrap_or_else(|| "Signed in".into());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(account).color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Sign out").clicked() {
+                    app.google_sign_out();
+                }
+            });
+        });
+        let cals = app.store.gcals.clone();
+        egui::ScrollArea::vertical().id_salt("gcals").max_height(150.0).show(ui, |ui| {
+            for c in &cals {
+                let mut shown = !app.cfg.google_hidden.contains(&c.id);
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut shown, "").changed() {
+                        app.google_toggle_calendar(&c.id);
+                    }
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                    ui.painter().circle_filled(r.center(), 5.0, Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
+                    ui.label(&c.name);
+                });
+            }
+        });
+    } else {
+        ui.add(egui::TextEdit::singleline(&mut s.google_id).hint_text("Client ID").desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::singleline(&mut s.google_secret).password(true).hint_text("Client secret").desired_width(f32::INFINITY));
+        ui.horizontal(|ui| {
+            let label = if app.google_waiting { "Waiting for browser…" } else { "Sign in with Google" };
+            let ready = !s.google_id.trim().is_empty() && !app.google_waiting;
+            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                app.google_sign_in(s.google_id.clone(), s.google_secret.clone());
+            }
+        });
     }
 }
 
@@ -510,6 +563,8 @@ fn settings_ui(app: &mut App, ctx: &egui::Context) {
         ui.add_space(10.0);
         ui.label("Calendar feeds (iCal URLs, one per line)");
         ui.add(egui::TextEdit::multiline(&mut s.calendars).hint_text("https://calendar.google.com/calendar/ical/…/basic.ics").desired_rows(3).desired_width(f32::INFINITY));
+        ui.add_space(10.0);
+        google_section(app, &mut s, ui);
         ui.add_space(10.0);
         if ui.checkbox(&mut app.cfg.stay_in_tray, "Stay running in tray").changed() {
             app.save_config();
@@ -550,8 +605,248 @@ fn settings_ui(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Parse "15:30", "3pm", "3:30 PM", or "9".
+pub fn parse_time(s: &str) -> Option<NaiveTime> {
+    let t = s.trim().to_lowercase().replace(' ', "");
+    let (body, pm) = if let Some(b) = t.strip_suffix("pm") {
+        (b, Some(true))
+    } else if let Some(b) = t.strip_suffix("am") {
+        (b, Some(false))
+    } else {
+        (t.as_str(), None)
+    };
+    let (h, m) = match body.split_once(':') {
+        Some((h, m)) => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?),
+        None => (body.parse::<u32>().ok()?, 0),
+    };
+    let h = match pm {
+        Some(_) if h == 0 || h > 12 => return None,
+        Some(true) => h % 12 + 12,
+        Some(false) => h % 12,
+        None => h,
+    };
+    NaiveTime::from_hms_opt(h, m, 0)
+}
+
+pub struct EventEditor {
+    /// Key of the event being changed. `None` when making a new one.
+    key: Option<String>,
+    cal: String,
+    title: String,
+    date: String,
+    start: String,
+    end: String,
+    all_day: bool,
+    /// Days from the start date to the end date (for all-day events: the days covered).
+    span_days: i64,
+    error: String,
+    focus: bool,
+}
+
+impl EventEditor {
+    pub fn edit(e: &Event) -> Self {
+        let span = if e.all_day { (e.end.date() - e.start.date()).num_days().max(1) } else { (e.end.date() - e.start.date()).num_days() };
+        Self {
+            key: Some(e.key()),
+            cal: e.cal.clone(),
+            title: e.title.clone(),
+            date: e.start.date().to_string(),
+            start: fmt_hm(e.start.time()),
+            end: fmt_hm(e.end.time()),
+            all_day: e.all_day,
+            span_days: span,
+            error: String::new(),
+            focus: true,
+        }
+    }
+
+    pub fn new_on(date: NaiveDate, store: &Store) -> Self {
+        let cal = store.gcals.iter().filter(|c| c.writable).max_by_key(|c| c.primary).map(|c| c.id.clone()).unwrap_or_default();
+        let now = chrono::Local::now().time();
+        let start = NaiveTime::from_hms_opt((now.hour() + 1).min(22), 0, 0).unwrap_or(NaiveTime::MIN);
+        Self {
+            key: None,
+            cal,
+            title: String::new(),
+            date: date.to_string(),
+            start: fmt_hm(start),
+            end: fmt_hm(start + Duration::hours(1)),
+            all_day: false,
+            span_days: 0,
+            error: String::new(),
+            focus: true,
+        }
+    }
+
+    /// The start and end this form describes.
+    pub fn times(&self) -> Result<(NaiveDateTime, NaiveDateTime), String> {
+        let date = NaiveDate::parse_from_str(self.date.trim(), "%Y-%m-%d").map_err(|_| "Date must look like 2026-11-02".to_string())?;
+        if self.all_day {
+            return Ok((date.and_time(NaiveTime::MIN), (date + Duration::days(self.span_days.max(1))).and_time(NaiveTime::MIN)));
+        }
+        let s = parse_time(&self.start).ok_or("Start time is not valid")?;
+        let e = parse_time(&self.end).ok_or("End time is not valid")?;
+        let start = date.and_time(s);
+        let end = (date + Duration::days(self.span_days)).and_time(e);
+        if end <= start {
+            return Err("The event must end after it starts".into());
+        }
+        Ok((start, end))
+    }
+}
+
+fn fmt_hm(t: NaiveTime) -> String {
+    t.format("%H:%M").to_string()
+}
+
+fn event_ui(app: &mut App, ctx: &egui::Context) {
+    let Some(mut ed) = app.event_editor.take() else { return };
+    let mut close = false;
+    let mut save = false;
+    let mut delete = false;
+    let writable: Vec<(String, String)> = app.store.gcals.iter().filter(|c| c.writable).map(|c| (c.id.clone(), c.name.clone())).collect();
+    let modal = egui::Modal::new(egui::Id::unique("event")).frame(egui::Frame::new().fill(POPUP).corner_radius(12.0).inner_margin(20.0)).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(if ed.key.is_some() { "Edit event" } else { "New event" }).font(bold_font(18.0)));
+        ui.add_space(10.0);
+        let title = ui.add(egui::TextEdit::singleline(&mut ed.title).hint_text("Title").desired_width(f32::INFINITY));
+        if std::mem::take(&mut ed.focus) {
+            title.request_focus();
+        }
+        ui.add_space(8.0);
+        if ed.key.is_none() && writable.len() > 1 {
+            let name = writable.iter().find(|c| c.0 == ed.cal).map(|c| c.1.clone()).unwrap_or_default();
+            egui::ComboBox::from_id_salt("event_cal").selected_text(name).width(260.0).show_ui(ui, |ui| {
+                for (id, n) in &writable {
+                    ui.selectable_value(&mut ed.cal, id.clone(), n);
+                }
+            });
+            ui.add_space(8.0);
+        }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut ed.date).desired_width(100.0));
+            ui.checkbox(&mut ed.all_day, "All day");
+        });
+        if !ed.all_day {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut ed.start).desired_width(70.0));
+                ui.label("to");
+                ui.add(egui::TextEdit::singleline(&mut ed.end).desired_width(70.0));
+            });
+        }
+        if !ed.error.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new(&ed.error).color(Color32::from_rgb(0xff, 0x7a, 0x6e)));
+        }
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if ed.key.is_some() && ui.button("Delete").clicked() {
+                delete = true;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                    save = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if ui.input(|i| i.key_pressed(Key::Enter)) {
+            save = true;
+        }
+    });
+    if modal.should_close() {
+        close = true;
+    }
+    if save {
+        match ed.times() {
+            _ if ed.title.trim().is_empty() => ed.error = "Add a title".into(),
+            _ if ed.cal.is_empty() && ed.key.is_none() => ed.error = "No calendar can take new events".into(),
+            Err(e) => ed.error = e,
+            Ok((start, end)) => {
+                let title = ed.title.trim().to_string();
+                match &ed.key {
+                    None => app.send(crate::api::Job::GoogleCreate { cal: ed.cal.clone(), title, start, end, all_day: ed.all_day }),
+                    Some(key) => {
+                        if let Some(e) = app.store.gevents.iter_mut().find(|e| &e.key() == key) {
+                            (e.title, e.start, e.end, e.all_day) = (title.clone(), start, end, ed.all_day);
+                            let job = crate::api::Job::GoogleUpdate { cal: e.cal.clone(), id: e.id.clone(), title: Some(title), start, end, all_day: ed.all_day };
+                            app.send(job);
+                            app.rebuild_events();
+                        }
+                    }
+                }
+                close = true;
+            }
+        }
+    }
+    if delete {
+        if let Some(key) = &ed.key {
+            if let Some(e) = app.store.gevents.iter().find(|e| &e.key() == key).cloned() {
+                app.send(crate::api::Job::GoogleDelete { cal: e.cal, id: e.id });
+                app.store.gevents.retain(|x| &x.key() != key);
+                app.rebuild_events();
+            }
+        }
+        close = true;
+    }
+    if !close {
+        app.event_editor = Some(ed);
+    }
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
     editor_ui(app, ctx, out);
     adder_ui(app, ctx);
+    event_ui(app, ctx);
     settings_ui(app, ctx);
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    fn t(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn times_are_read_in_common_forms() {
+        assert_eq!(parse_time("15:30"), Some(t(15, 30)));
+        assert_eq!(parse_time("3pm"), Some(t(15, 0)));
+        assert_eq!(parse_time("3:30 PM"), Some(t(15, 30)));
+        assert_eq!(parse_time("12am"), Some(t(0, 0)));
+        assert_eq!(parse_time("12pm"), Some(t(12, 0)));
+        assert_eq!(parse_time("9"), Some(t(9, 0)));
+        assert_eq!(parse_time("25:00"), None);
+        assert_eq!(parse_time("13pm"), None);
+        assert_eq!(parse_time("soon"), None);
+    }
+
+    #[test]
+    fn form_builds_times_and_checks_them() {
+        let mut e = EventEditor::new_on(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), &Store::default());
+        e.start = "10:00".into();
+        e.end = "11:30".into();
+        let (s, en) = e.times().unwrap();
+        assert_eq!(en - s, Duration::minutes(90));
+        e.end = "09:00".into();
+        assert!(e.times().is_err());
+        e.date = "tomorrow".into();
+        assert!(e.times().is_err());
+        e.date = "2026-11-02".into();
+        e.all_day = true;
+        let (s, en) = e.times().unwrap();
+        assert_eq!(en - s, Duration::days(1));
+    }
+
+    #[test]
+    fn editing_keeps_multi_day_span() {
+        let d = |x: &str| NaiveDate::parse_from_str(x, "%Y-%m-%d").unwrap().and_time(NaiveTime::MIN);
+        let ev = Event::new("Trip".into(), d("2026-11-03"), d("2026-11-06"), true);
+        let (s, en) = EventEditor::edit(&ev).times().unwrap();
+        assert_eq!((s, en), (d("2026-11-03"), d("2026-11-06")));
+    }
 }

@@ -3,9 +3,10 @@
 //! The UI never blocks on the network: it sends `Job`s to one worker thread and
 //! applies the `Msg`s that come back.
 
+use crate::gcal::{self, Creds, Session};
 use crate::ics;
-use crate::model::{Event, Item, SyncResponse};
-use chrono::{Duration, Local, NaiveDate};
+use crate::model::{Event, GCal, Item, SyncResponse};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
 use serde_json::{json, Value};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration as StdDuration;
@@ -35,6 +36,12 @@ pub enum Job {
     Filter(String),
     Completed { since: NaiveDate, until: NaiveDate },
     Calendars(Vec<String>),
+    /// Sign in to Google (or out, with `None`) and load calendars and events.
+    GoogleSet { creds: Option<Creds>, hidden: Vec<String> },
+    GoogleSync { hidden: Vec<String> },
+    GoogleCreate { cal: String, title: String, start: NaiveDateTime, end: NaiveDateTime, all_day: bool },
+    GoogleUpdate { cal: String, id: String, title: Option<String>, start: NaiveDateTime, end: NaiveDateTime, all_day: bool },
+    GoogleDelete { cal: String, id: String },
 }
 
 pub enum Msg {
@@ -42,6 +49,12 @@ pub enum Msg {
     FilterResult { query: String, items: Vec<Item> },
     Completed(Vec<Item>),
     Events(Vec<Event>),
+    GoogleCalendars(Vec<GCal>),
+    GoogleEvents(Vec<Event>),
+    /// Google refused the saved sign-in.
+    GoogleExpired,
+    /// The browser sign-in finished.
+    GoogleSignedIn(Result<Creds, String>),
     QuickAddDone { temp_id: String },
     Error(String),
     Busy(bool),
@@ -59,6 +72,10 @@ struct Client {
     agent: ureq::Agent,
     token: String,
     sync_token: String,
+    google: Option<Session>,
+    hidden: Vec<String>,
+    /// Auto-sync ticks since Google was last read.
+    g_ticks: u32,
 }
 
 type Res<T> = Result<T, String>;
@@ -215,7 +232,7 @@ pub fn spawn(token: String, sync_token: String, rx: Receiver<Job>, tx: Sender<Ms
             .user_agent("fastoist/0.1")
             .build()
             .into();
-        let mut c = Client { agent, token, sync_token };
+        let mut c = Client { agent, token, sync_token, google: None, hidden: Vec::new(), g_ticks: 0 };
         let send = |m: Msg| {
             let _ = tx.send(m);
             wake();
@@ -223,10 +240,18 @@ pub fn spawn(token: String, sync_token: String, rx: Receiver<Job>, tx: Sender<Ms
         loop {
             let job = match rx.recv_timeout(AUTO_SYNC) {
                 Ok(j) => j,
-                Err(RecvTimeoutError::Timeout) => Job::Sync,
+                Err(RecvTimeoutError::Timeout) => {
+                    c.g_ticks += 1;
+                    if c.google.is_some() && c.g_ticks >= 5 {
+                        Job::GoogleSync { hidden: c.hidden.clone() }
+                    } else {
+                        Job::Sync
+                    }
+                }
                 Err(RecvTimeoutError::Disconnected) => return,
             };
-            if c.token.is_empty() && !matches!(job, Job::SetToken(_) | Job::Calendars(_)) {
+            let google_job = matches!(job, Job::GoogleSet { .. } | Job::GoogleSync { .. } | Job::GoogleCreate { .. } | Job::GoogleUpdate { .. } | Job::GoogleDelete { .. });
+            if c.token.is_empty() && !google_job && !matches!(job, Job::SetToken(_) | Job::Calendars(_)) {
                 continue;
             }
             send(Msg::Busy(true));
@@ -320,6 +345,70 @@ fn run(c: &mut Client, job: Job, rx: &Receiver<Job>, send: &impl Fn(Msg)) -> Res
             }
             send(Msg::Events(events));
         }
+        Job::GoogleSet { creds, hidden } => {
+            if let Some(old) = c.google.take() {
+                if creds.is_none() {
+                    old.revoke(&c.agent);
+                }
+            }
+            c.hidden = hidden;
+            match creds {
+                Some(creds) => {
+                    c.google = Some(Session::new(creds));
+                    google_load(c, send)?;
+                }
+                None => {
+                    send(Msg::GoogleCalendars(Vec::new()));
+                    send(Msg::GoogleEvents(Vec::new()));
+                }
+            }
+        }
+        Job::GoogleSync { hidden } => {
+            c.hidden = hidden;
+            google_load(c, send)?;
+        }
+        Job::GoogleCreate { cal, title, start, end, all_day } => {
+            let r = with_google(c, send, |s, a| s.create(a, &cal, &title, start, end, all_day));
+            google_load(c, send)?;
+            r?;
+        }
+        Job::GoogleUpdate { cal, id, title, start, end, all_day } => {
+            let r = with_google(c, send, |s, a| s.update(a, &cal, &id, title.as_deref(), start, end, all_day));
+            google_load(c, send)?;
+            r?;
+        }
+        Job::GoogleDelete { cal, id } => {
+            let r = with_google(c, send, |s, a| s.delete(a, &cal, &id));
+            google_load(c, send)?;
+            r?;
+        }
     }
+    Ok(())
+}
+
+/// Run a Google call. When Google rejects the saved sign-in, tell the app to forget it.
+fn with_google<T>(c: &mut Client, send: &impl Fn(Msg), f: impl FnOnce(&mut Session, &ureq::Agent) -> Res<T>) -> Res<T> {
+    let Some(s) = c.google.as_mut() else { return Err("Not signed in to Google".into()) };
+    let r = f(s, &c.agent);
+    if r.as_ref().is_err_and(|e| e == gcal::EXPIRED) {
+        c.google = None;
+        send(Msg::GoogleExpired);
+    }
+    r
+}
+
+/// Fetch the calendar list and the events of every visible calendar.
+fn google_load(c: &mut Client, send: &impl Fn(Msg)) -> Res<()> {
+    c.g_ticks = 0;
+    let hidden = c.hidden.clone();
+    let today = Local::now().date_naive();
+    let (from, to) = (today - Duration::days(60), today + Duration::days(240));
+    let cals = with_google(c, send, |s, a| s.calendars(a))?;
+    send(Msg::GoogleCalendars(cals.clone()));
+    let mut events = Vec::new();
+    for cal in cals.iter().filter(|k| !hidden.contains(&k.id)) {
+        events.extend(with_google(c, send, |s, a| s.events(a, cal, from, to))?);
+    }
+    send(Msg::GoogleEvents(events));
     Ok(())
 }
