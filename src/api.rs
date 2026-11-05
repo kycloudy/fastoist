@@ -25,6 +25,8 @@ pub struct AddExtras {
     pub due: Option<Value>,
     pub deadline: Option<String>,
     pub labels: Vec<String>,
+    /// `reminder_add` arguments; the new task's id is filled in once it exists.
+    pub reminders: Vec<Value>,
 }
 
 pub enum Job {
@@ -90,7 +92,7 @@ impl Client {
         let cmds = serde_json::to_string(commands).unwrap_or_default();
         let mut form = vec![
             ("sync_token", token.as_str()),
-            ("resource_types", r#"["items","projects","sections","labels","filters","user"]"#),
+            ("resource_types", r#"["items","projects","sections","labels","filters","reminders","user"]"#),
         ];
         if !commands.is_empty() {
             form.push(("commands", cmds.as_str()));
@@ -210,6 +212,11 @@ fn extras_commands(task: &Value, x: &AddExtras, typed_project: bool) -> Vec<Valu
     }
     if upd.len() > 1 {
         cmds.push(command("item_update", Value::Object(upd)));
+    }
+    for r in &x.reminders {
+        let mut args = r.clone();
+        args["item_id"] = json!(id);
+        cmds.push(command("reminder_add", args));
     }
     if let Some(parent) = &x.parent_id {
         cmds.push(command("item_move", json!({ "id": id, "parent_id": parent })));

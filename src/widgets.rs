@@ -195,6 +195,10 @@ pub fn task_row(ui: &mut Ui, store: &Store, item: &Item, today: NaiveDate, o: &R
                 }
             }
         }
+        if store.reminders.values().any(|r| r.item_id == item.id) {
+            theme::icon(&p, Rect::from_center_size(Pos2::new(x + 4.0, my), Vec2::splat(12.0)), Icon::Alarm, MUTED);
+            x += 20.0;
+        }
         if let Some(d) = item.deadline.as_ref().and_then(|d| d.day()) {
             let (t, c) = deadline_label(d, today);
             x = meta(&p, ui, x, my, Some(Icon::Deadline), &t, c);
@@ -338,6 +342,25 @@ pub fn icon_button(ui: &mut Ui, ic: Icon, tip: &str) -> Response {
 
 /// A calendar chip for a task. Draggable; click opens; circle completes.
 pub fn task_chip(ui: &mut Ui, rect: Rect, item: &Item, done: bool, show_time: bool, today: NaiveDate, out: &mut Vec<Action>) {
+    task_card(ui, rect, rect.height(), item, done, show_time, today, out);
+}
+
+/// A timed task in the week grid: one rounded block that spans its whole duration.
+pub fn task_block(ui: &mut Ui, rect: Rect, item: &Item, done: bool, today: NaiveDate, out: &mut Vec<Action>) {
+    let head = rect.height().min(22.0);
+    task_card(ui, rect, head, item, done, true, today, out);
+    // Tall blocks also show the time range under the title.
+    if let (Some(t), Some(d)) = (item.due_at().and_then(|d| d.time), item.duration.as_ref()) {
+        if rect.height() >= head + 16.0 {
+            let end = t + chrono::Duration::minutes(d.minutes());
+            let p = ui.painter_at(rect);
+            p.text(Pos2::new(rect.left() + 19.0, rect.top() + head + 1.0), Align2::LEFT_TOP, format!("{} – {}", fmt_time(t), fmt_time(end)), font(11.5), MUTED);
+        }
+    }
+}
+
+/// Paint a task as a filled rounded block. The title row sits in the top `head` pixels.
+fn task_card(ui: &mut Ui, rect: Rect, head: f32, item: &Item, done: bool, show_time: bool, today: NaiveDate, out: &mut Vec<Action>) {
     let id = ui.scope_id().with(("chip", &item.id, rect.min.x as i32, rect.min.y as i32));
     let resp = ui.interact(rect, id, if done { Sense::click() } else { Sense::click_and_drag() });
     let p = ui.painter_at(rect);
@@ -346,8 +369,9 @@ pub fn task_chip(ui: &mut Ui, rect: Rect, item: &Item, done: bool, show_time: bo
     if resp.hovered() {
         fill = fill.gamma_multiply(1.25);
     }
-    p.rect_filled(rect, 4.0, fill);
-    let c = Pos2::new(rect.left() + 10.0, rect.center().y);
+    p.rect_filled(rect, if head < rect.height() { 6.0 } else { 4.0 }, fill);
+    let row = Rect::from_min_size(rect.min, Vec2::new(rect.width(), head));
+    let c = Pos2::new(rect.left() + 10.0, row.center().y);
     let over_circle = ui.ctx().pointer_hover_pos().is_some_and(|pt| (pt - c).length() < 9.0);
     if item.is_recurring() && !done {
         theme::icon(&p, Rect::from_center_size(c, Vec2::splat(12.0)), Icon::Repeat, TEXT);
@@ -361,7 +385,7 @@ pub fn task_chip(ui: &mut Ui, rect: Rect, item: &Item, done: bool, show_time: bo
         if let Some(t) = item.due_at().and_then(|d| d.time) {
             let g = galley_one(ui, &fmt_time(t), font(11.5), MUTED);
             right -= g.size().x;
-            p.galley(Pos2::new(right, rect.center().y - g.size().y / 2.0), g, MUTED);
+            p.galley(Pos2::new(right, row.center().y - g.size().y / 2.0), g, MUTED);
             right -= 6.0;
         }
     }
@@ -373,7 +397,7 @@ pub fn task_chip(ui: &mut Ui, rect: Rect, item: &Item, done: bool, show_time: bo
     job.wrap.max_width = (right - rect.left() - 20.0).max(10.0);
     job.wrap.max_rows = 1;
     let g = ui.painter().layout_job(job);
-    p.galley(Pos2::new(rect.left() + 19.0, rect.center().y - g.size().y / 2.0), g, text_col);
+    p.galley(Pos2::new(rect.left() + 19.0, row.center().y - g.size().y / 2.0), g, text_col);
 
     if done {
         if resp.clicked() && over_circle {

@@ -186,6 +186,8 @@ pub enum Icon {
     Sync,
     Check,
     Panel,
+    Alarm,
+    Send,
 }
 
 /// Paint a 16px line icon centered in `r`.
@@ -282,6 +284,19 @@ pub fn icon(p: &Painter, r: Rect, icon: Icon, color: Color32) {
         Icon::Clock => {
             p.circle_stroke(c, 6.0 * k, s);
             p.add(PathShape::line(vec![at(0.0, -3.5), at(0.0, 0.0), at(2.5, 1.5)], s));
+        }
+        Icon::Alarm => {
+            p.circle_stroke(at(0.0, 0.8), 5.5 * k, s);
+            p.add(PathShape::line(vec![at(0.0, -2.0), at(0.0, 0.8), at(2.0, 2.0)], s));
+            p.line_segment([at(-6.5, -4.0), at(-4.0, -6.5)], s);
+            p.line_segment([at(6.5, -4.0), at(4.0, -6.5)], s);
+            p.line_segment([at(-3.5, 5.5), at(-5.0, 7.0)], s);
+            p.line_segment([at(3.5, 5.5), at(5.0, 7.0)], s);
+        }
+        Icon::Send => {
+            let s = Stroke::new(1.8, color);
+            p.line_segment([at(0.0, 6.0), at(0.0, -6.0)], s);
+            p.add(PathShape::line(vec![at(-5.0, -1.0), at(0.0, -6.0), at(5.0, -1.0)], s));
         }
         Icon::Close => {
             p.line_segment([at(-4.5, -4.5), at(4.5, 4.5)], s);
