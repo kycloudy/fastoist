@@ -72,8 +72,8 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(it: &Item, _store: &Store) -> Self {
-        let draft = Draft::from_item(it);
+    pub fn new(it: &Item, store: &Store) -> Self {
+        let draft = Draft::load(it, store);
         Self {
             id: it.id.clone(),
             content: it.content.clone(),
@@ -96,6 +96,16 @@ impl Editor {
         }
         if self.description != self.saved_text.1 {
             args.insert("description".into(), json!(self.description));
+        }
+        let rem = pickers::reminder_commands(&self.id, &self.saved.reminders, &mut self.draft.reminders);
+        if !rem.is_empty() {
+            app.store.reminders.retain(|_, r| r.item_id != self.id || self.draft.reminders.iter().any(|d| d.id.as_ref() == Some(&r.id)) || r.kind == "location");
+            for d in &self.draft.reminders {
+                let id = d.id.clone().unwrap_or_default();
+                app.store.reminders.entry(id.clone()).or_insert_with(|| d.to_reminder(&id, &self.id));
+            }
+            app.send(crate::api::Job::Commands(rem));
+            self.saved.reminders = self.draft.reminders.clone();
         }
         if args.len() == 1 && mv.is_none() {
             return;
@@ -223,6 +233,7 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
                     (Field::Project, "Project", Some(pickers::project_value(store, d))),
                     (Field::Date, "Date", d.due.as_ref().map(|x| { let (t, c) = x.label(today); (Icon::Calendar, c, t) })),
                     (Field::Deadline, "Deadline", d.deadline.map(|x| { let (t, c) = widgets::deadline_label(x, today); (Icon::Deadline, c, t) })),
+                    (Field::Reminders, "Reminders", pickers::reminders_text(&d.reminders).map(|t| (Icon::Alarm, TEXT, t))),
                     (Field::Priority, "Priority", Some((Icon::Flag, priority_color(d.priority), format!("P{}", 5 - d.priority)))),
                     (Field::Labels, "Labels", (!d.labels.is_empty()).then(|| (Icon::Tag, MUTED, d.labels.join(", ")))),
                 ];
@@ -267,7 +278,6 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
 pub struct Adder {
     text: String,
     description: String,
-    show_desc: bool,
     draft: Draft,
     parent_id: Option<String>,
     menu: bool,
@@ -280,7 +290,6 @@ impl Adder {
         Self {
             text: String::new(),
             description: String::new(),
-            show_desc: false,
             draft: Draft {
                 project_id: d.project_id.unwrap_or_else(|| store.inbox_id().unwrap_or("").to_string()),
                 section_id: d.section_id,
@@ -288,6 +297,7 @@ impl Adder {
                 deadline: None,
                 priority: 1,
                 labels: d.labels,
+                reminders: Vec::new(),
             },
             parent_id: d.parent_id,
             menu: false,
@@ -297,15 +307,26 @@ impl Adder {
     }
 }
 
-/// A rounded chip showing one chosen property. Returns its response.
-fn chip(ui: &mut Ui, ic: Icon, col: Color32, text: &str) -> egui::Response {
+/// A rounded property button, like Todoist's quick add. A set property shows its value and a clear button.
+/// Returns the button's response and whether the clear button was pressed.
+fn chip(ui: &mut Ui, ic: Icon, col: Color32, text: &str, clear: bool) -> (egui::Response, bool) {
     let g = ui.painter().layout_no_wrap(text.to_string(), font(12.5), col);
-    let size = Vec2::new(g.size().x + 34.0, 26.0);
+    let size = Vec2::new(g.size().x + if clear { 50.0 } else { 34.0 }, 28.0);
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
-    ui.painter().rect(r, 6.0, if resp.hovered() { HOVER } else { POPUP }, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
-    theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 13.0, r.center().y), Vec2::splat(13.0)), ic, col);
-    ui.painter().galley(Pos2::new(r.left() + 24.0, r.center().y - g.size().y / 2.0), g, col);
-    resp
+    let x = Rect::from_center_size(Pos2::new(r.right() - 14.0, r.center().y), Vec2::splat(16.0));
+    let over_x = clear && resp.hover_pos().is_some_and(|p| x.contains(p));
+    let p = ui.painter();
+    p.rect(r, 6.0, if resp.hovered() && !over_x { HOVER } else { POPUP }, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    theme::icon(p, Rect::from_center_size(Pos2::new(r.left() + 14.0, r.center().y), Vec2::splat(14.0)), ic, col);
+    p.galley(Pos2::new(r.left() + 26.0, r.center().y - g.size().y / 2.0), g, col);
+    if clear {
+        if over_x {
+            p.rect_filled(x, 3.0, HOVER);
+        }
+        theme::icon(p, x.shrink(2.0), Icon::Close, if over_x { TEXT } else { MUTED });
+    }
+    let cleared = resp.clicked() && over_x;
+    (resp, cleared)
 }
 
 fn menu_row(ui: &mut Ui, ic: Icon, name: &str, key: &str) -> bool {
@@ -343,69 +364,92 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
             .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(140) })
             .show(ui, |ui| {
                 ui.set_width(w);
-                ui.horizontal(|ui| {
-                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
-                    plus_rect = r;
-                    ui.painter().rect_filled(r, 6.0, if resp.hovered() || ad.menu { Color32::from_rgb(0x44, 0x44, 0x44) } else { Color32::from_rgb(0x38, 0x38, 0x38) });
-                    theme::icon(ui.painter(), r, Icon::Plus, TEXT);
-                    if resp.on_hover_text("Add details").clicked() {
-                        ad.menu = !ad.menu;
-                        ad.pop = None;
-                    }
-                    let tw = ui.available_width() - 36.0;
-                    let r = ui.add(egui::TextEdit::singleline(&mut ad.text).hint_text("Task name").font(font(16.0)).frame(egui::Frame::NONE).desired_width(tw).margin(egui::Margin::symmetric(4, 4)));
-                    if std::mem::take(&mut ad.focus) {
-                        r.request_focus();
-                    }
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                        submit = true;
-                    }
-                    if widgets::icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
-                        close = true;
-                    }
-                });
-                if ad.show_desc {
-                    ui.horizontal(|ui| {
-                        ui.add_space(36.0);
-                        ui.add(egui::TextEdit::multiline(&mut ad.description).hint_text("Description").frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
-                    });
+                let r = ui.add(egui::TextEdit::singleline(&mut ad.text).hint_text("Task name").font(bold_font(16.0)).frame(egui::Frame::NONE).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(4, 4)));
+                if std::mem::take(&mut ad.focus) {
+                    r.request_focus();
                 }
-                // Chips for chosen properties.
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    submit = true;
+                }
+                ui.add(egui::TextEdit::multiline(&mut ad.description).hint_text("Description").frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(4, 0)));
+                ui.add_space(6.0);
+                // Property buttons. Each opens its picker; a set one shows its value and a clear button.
                 let d = ad.draft.clone();
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(36.0);
-                    if let Some(due) = &d.due {
-                        let (t, c) = due.label(today);
-                        let r = chip(ui, Icon::Calendar, c, &t);
-                        if r.clicked() {
-                            open = Some((Field::Date, r.rect));
+                let mut clear: Option<Field> = None;
+                ui.horizontal(|ui| {
+                    let actions_w = 76.0;
+                    let chips_w = ui.available_width() - actions_w;
+                    ui.allocate_ui(Vec2::new(chips_w, 0.0), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                            let (r, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                            plus_rect = r;
+                            ui.painter().rect_filled(r, 6.0, if resp.hovered() || ad.menu { Color32::from_rgb(0x44, 0x44, 0x44) } else { Color32::from_rgb(0x38, 0x38, 0x38) });
+                            theme::icon(ui.painter(), r, Icon::Plus, TEXT);
+                            if resp.on_hover_text("More").clicked() {
+                                ad.menu = !ad.menu;
+                                ad.pop = None;
+                            }
+                            let mut put = |ui: &mut Ui, f: Field, ic: Icon, col: Color32, text: &str, set: bool| {
+                                let (r, x) = chip(ui, ic, if set { col } else { MUTED }, text, set);
+                                if x {
+                                    clear = Some(f);
+                                } else if r.clicked() {
+                                    open = Some((f, r.rect));
+                                }
+                            };
+                            let (ic, col, name) = pickers::project_value(&app.store, &d);
+                            put(ui, Field::Project, ic, col, &name, false);
+                            match &d.due {
+                                Some(due) => {
+                                    let (t, c) = due.label(today);
+                                    put(ui, Field::Date, Icon::Calendar, c, &t, true);
+                                }
+                                None => put(ui, Field::Date, Icon::Calendar, MUTED, "Date", false),
+                            }
+                            let rem = pickers::reminders_text(&d.reminders);
+                            put(ui, Field::Reminders, Icon::Alarm, TEXT, rem.as_deref().unwrap_or("Reminders"), rem.is_some());
+                            if d.priority > 1 {
+                                put(ui, Field::Priority, Icon::Flag, priority_color(d.priority), &format!("P{}", 5 - d.priority), true);
+                            } else {
+                                put(ui, Field::Priority, Icon::Flag, MUTED, "Priority", false);
+                            }
+                            match d.deadline {
+                                Some(dl) => {
+                                    let (t, c) = widgets::deadline_label(dl, today);
+                                    put(ui, Field::Deadline, Icon::Deadline, c, &t, true);
+                                }
+                                None => put(ui, Field::Deadline, Icon::Deadline, MUTED, "Deadline", false),
+                            }
+                            if d.labels.is_empty() {
+                                put(ui, Field::Labels, Icon::Tag, MUTED, "Labels", false);
+                            } else {
+                                put(ui, Field::Labels, Icon::Tag, TEXT, &d.labels.join(", "), true);
+                            }
+                        });
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                        let ready = !ad.text.trim().is_empty();
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+                        let fill = if ready { if resp.hovered() { ACCENT.gamma_multiply(1.15) } else { ACCENT } } else { ACCENT.gamma_multiply(0.45) };
+                        ui.painter().rect_filled(r, 6.0, fill);
+                        theme::icon(ui.painter(), r, Icon::Send, Color32::WHITE);
+                        if resp.on_hover_text("Add task (Enter)").clicked() {
+                            submit = true;
                         }
-                    }
-                    if d.priority > 1 {
-                        let r = chip(ui, Icon::Flag, priority_color(d.priority), &format!("P{}", 5 - d.priority));
-                        if r.clicked() {
-                            open = Some((Field::Priority, r.rect));
+                        if widgets::icon_button(ui, Icon::Close, "Close (Esc)").clicked() {
+                            close = true;
                         }
-                    }
-                    if let Some(dl) = d.deadline {
-                        let (t, c) = widgets::deadline_label(dl, today);
-                        let r = chip(ui, Icon::Deadline, c, &t);
-                        if r.clicked() {
-                            open = Some((Field::Deadline, r.rect));
-                        }
-                    }
-                    for l in &d.labels {
-                        let r = chip(ui, Icon::Tag, MUTED, l);
-                        if r.clicked() {
-                            open = Some((Field::Labels, r.rect));
-                        }
-                    }
-                    let (ic, col, name) = pickers::project_value(&app.store, &d);
-                    let r = chip(ui, ic, col, &name);
-                    if r.clicked() {
-                        open = Some((Field::Project, r.rect));
-                    }
+                    });
                 });
+                match clear {
+                    Some(Field::Date) => ad.draft.due = None,
+                    Some(Field::Reminders) => ad.draft.reminders.clear(),
+                    Some(Field::Priority) => ad.draft.priority = 1,
+                    Some(Field::Deadline) => ad.draft.deadline = None,
+                    Some(Field::Labels) => ad.draft.labels.clear(),
+                    _ => {}
+                }
             });
     });
 
@@ -416,20 +460,17 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
                 ui.set_width(270.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let rows = [
-                    (Icon::Section, "Description", "", None),
-                    (Icon::Hash, "Project", "#", Some(Field::Project)),
-                    (Icon::Calendar, "Date", "", Some(Field::Date)),
-                    (Icon::Flag, "Priority", "!", Some(Field::Priority)),
-                    (Icon::Deadline, "Deadline", "{", Some(Field::Deadline)),
-                    (Icon::Tag, "Labels", "@", Some(Field::Labels)),
+                    (Icon::Hash, "Project", "#", Field::Project),
+                    (Icon::Calendar, "Date", "", Field::Date),
+                    (Icon::Alarm, "Reminders", "", Field::Reminders),
+                    (Icon::Flag, "Priority", "!", Field::Priority),
+                    (Icon::Deadline, "Deadline", "{", Field::Deadline),
+                    (Icon::Tag, "Labels", "@", Field::Labels),
                 ];
                 for (ic, name, key, field) in rows {
                     if menu_row(ui, ic, name, key) {
                         ad.menu = false;
-                        match field {
-                            None => ad.show_desc = true,
-                            Some(f) => open = Some((f, Rect::from_min_size(plus_rect.left_bottom(), Vec2::ZERO))),
-                        }
+                        open = Some((field, Rect::from_min_size(plus_rect.left_bottom(), Vec2::ZERO)));
                     }
                 }
             });
@@ -470,12 +511,12 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
             due: d.due.as_ref().map(DueEdit::to_json),
             deadline: d.deadline.map(|x| x.format("%Y-%m-%d").to_string()),
             labels: d.labels.clone(),
+            reminders: d.reminders.iter().map(|r| r.args("")).collect(),
         };
         app.add_task(ad.text.trim().to_string(), extras);
         // Stay open for the next task, like Todoist's quick add.
         ad.text.clear();
         ad.description.clear();
-        ad.show_desc = false;
         ad.focus = true;
     }
     if !close {
@@ -850,3 +891,4 @@ mod event_tests {
         assert_eq!((s, en), (d("2026-11-03"), d("2026-11-06")));
     }
 }
+

@@ -4,6 +4,7 @@
 //! The Windows glue is in `platform`; other systems get a no-op `Tray`.
 
 use crate::app::View;
+use crate::glyphs::{priority_rgb, Glyph};
 use crate::model::{Item, Store};
 use crate::widgets::{date_sort, fmt_time};
 use chrono::{Duration, NaiveDate, NaiveTime};
@@ -66,15 +67,19 @@ impl Cmd {
 /// One row of the tray menu. `id` is what comes back in `Cmd::from_id`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
-    Item { id: String, text: String },
+    Item { id: String, text: String, icon: Option<Glyph> },
     Header(String),
     Check { id: String, text: String, checked: bool },
-    Sub { text: String, items: Vec<Entry> },
+    Sub { text: String, items: Vec<Entry>, icon: Option<Glyph> },
     Sep,
 }
 
-fn item(id: &str, text: &str) -> Entry {
-    Entry::Item { id: id.into(), text: text.into() }
+fn item(id: &str, text: &str, icon: Glyph) -> Entry {
+    Entry::Item { id: id.into(), text: text.into(), icon: Some(icon) }
+}
+
+fn rgb(c: eframe::egui::Color32) -> [u8; 3] {
+    [c.r(), c.g(), c.b()]
 }
 
 /// Windows menus read `&` as a shortcut marker, so double it. Long titles get cut.
@@ -106,7 +111,7 @@ fn day_rows(store: &Store, day: NaiveDate, include_overdue: bool) -> Vec<Entry> 
                 Some(tm) => format!("{} {}", fmt_time(tm), label(&t.content)),
                 None => label(&t.content),
             };
-            Row { time, event: false, entry: Entry::Item { id: format!("task:{}", t.id), text } }
+            Row { time, event: false, entry: Entry::Item { id: format!("task:{}", t.id), text, icon: Some(Glyph::Task(priority_rgb(t.priority))) } }
         })
         .collect();
     for e in store.events.iter().filter(|e| {
@@ -121,7 +126,8 @@ fn day_rows(store: &Store, day: NaiveDate, include_overdue: bool) -> Vec<Entry> 
             Some(tm) => format!("{} {}", fmt_time(tm), label(&e.title)),
             None => label(&e.title),
         };
-        rows.push(Row { time, event: true, entry: Entry::Item { id: "go:upcoming".into(), text } });
+        let color = rgb(crate::widgets::event_color(e));
+        rows.push(Row { time, event: true, entry: Entry::Item { id: "go:upcoming".into(), text, icon: Some(Glyph::Event(color)) } });
     }
     // Timed rows by clock, then all-day events, then tasks without a time.
     rows.sort_by_key(|r| (r.time.is_none() && !r.event, r.time.is_none(), r.time));
@@ -136,7 +142,7 @@ fn section(out: &mut Vec<Entry>, title: &str, rows: Vec<Entry>, more_view: &str)
     let extra = rows.len().saturating_sub(MAX_ROWS);
     out.extend(rows.into_iter().take(MAX_ROWS));
     if extra > 0 {
-        out.push(Entry::Item { id: more_view.into(), text: format!("{extra} more…") });
+        out.push(Entry::Item { id: more_view.into(), text: format!("{extra} more…"), icon: None });
     }
 }
 
@@ -145,17 +151,17 @@ fn favorites(store: &Store) -> Vec<Entry> {
     let mut v = Vec::new();
     for (p, _) in store.project_tree() {
         if p.is_favorite {
-            v.push(Entry::Item { id: format!("go:p:{}", p.id), text: label(&p.name) });
+            v.push(Entry::Item { id: format!("go:p:{}", p.id), text: label(&p.name), icon: Some(Glyph::Project(rgb(crate::theme::named_color(&p.color)))) });
         }
     }
     for f in store.sorted_filters() {
         if f.is_favorite {
-            v.push(Entry::Item { id: format!("go:f:{}", f.id), text: label(&f.name) });
+            v.push(Entry::Item { id: format!("go:f:{}", f.id), text: label(&f.name), icon: Some(Glyph::Filter(rgb(crate::theme::named_color(&f.color)))) });
         }
     }
     for l in store.sorted_labels() {
         if l.is_favorite {
-            v.push(Entry::Item { id: format!("go:l:{}", l.name), text: label(&l.name) });
+            v.push(Entry::Item { id: format!("go:l:{}", l.name), text: label(&l.name), icon: Some(Glyph::Label(rgb(crate::theme::named_color(&l.color)))) });
         }
     }
     v
@@ -163,7 +169,7 @@ fn favorites(store: &Store) -> Vec<Entry> {
 
 /// Build the whole menu for `today`.
 pub fn model(store: &Store, today: NaiveDate, stay: bool) -> Vec<Entry> {
-    let mut m = vec![item("add", &format!("Add task\t{ADD_HOTKEY}")), item("show", &format!("Show Fastoist\t{SHOW_HOTKEY}")), Entry::Sep];
+    let mut m = vec![item("add", &format!("Add task\t{ADD_HOTKEY}"), Glyph::Add), item("show", &format!("Show Fastoist\t{SHOW_HOTKEY}"), Glyph::Window), Entry::Sep];
     let before = m.len();
     section(&mut m, "Today", day_rows(store, today, true), "go:today");
     section(&mut m, "Tomorrow", day_rows(store, today + Duration::days(1), false), "go:upcoming");
@@ -171,23 +177,23 @@ pub fn model(store: &Store, today: NaiveDate, stay: bool) -> Vec<Entry> {
         m.push(Entry::Sep);
     }
     m.extend([
-        item("go:inbox", "Inbox"),
-        item("go:today", "Today"),
-        item("go:upcoming", "Upcoming"),
-        item("go:filters", "Filters and Labels"),
-        item("go:completed", "Completed"),
+        item("go:inbox", "Inbox", Glyph::Inbox),
+        item("go:today", "Today", Glyph::Today),
+        item("go:upcoming", "Upcoming", Glyph::Upcoming),
+        item("go:filters", "Filters and Labels", Glyph::Filters),
+        item("go:completed", "Completed", Glyph::Completed),
         Entry::Sep,
     ]);
     let favs = favorites(store);
     if !favs.is_empty() {
-        m.push(Entry::Sub { text: "Favorites".into(), items: favs });
+        m.push(Entry::Sub { text: "Favorites".into(), items: favs, icon: Some(Glyph::Star) });
         m.push(Entry::Sep);
     }
     m.extend([
-        item("settings", "Settings"),
+        item("settings", "Settings", Glyph::Settings),
         Entry::Check { id: "stay".into(), text: "Stay running in tray".into(), checked: stay },
         Entry::Sep,
-        item("quit", "Quit Fastoist"),
+        item("quit", "Quit Fastoist", Glyph::Quit),
     ]);
     m
 }
@@ -209,9 +215,12 @@ mod platform {
     use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     use std::ffi::c_void;
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+    use crate::glyphs::{self, Glyph};
+    use std::collections::HashMap;
+    use tray_icon::menu::{CheckMenuItem, IconMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
     use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows_sys::Win32::System::Threading::{CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW};
 
@@ -264,19 +273,63 @@ mod platform {
         unsafe { ShowWindow(hwnd as *mut c_void, SW_HIDE) };
     }
 
-    fn build(entries: &[Entry]) -> Vec<Box<dyn IsMenuItem>> {
+    /// Make the process's popup menus, the tray menu among them, use the dark theme.
+    /// Windows has no public call for this; Explorer and other apps use these uxtheme exports.
+    fn dark_menus() {
+        type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
+        type FlushMenuThemes = unsafe extern "system" fn();
+        let name = wide("uxtheme.dll");
+        unsafe {
+            let lib = LoadLibraryW(name.as_ptr());
+            if lib.is_null() {
+                return;
+            }
+            // Ordinal 135 is SetPreferredAppMode (2 = force dark); 136 is FlushMenuThemes.
+            if let Some(f) = GetProcAddress(lib, 135usize as *const u8) {
+                let set: SetPreferredAppMode = std::mem::transmute(f);
+                set(2);
+            }
+            if let Some(f) = GetProcAddress(lib, 136usize as *const u8) {
+                let flush: FlushMenuThemes = std::mem::transmute(f);
+                flush();
+            }
+        }
+    }
+
+    /// Menu icons, drawn once per glyph.
+    #[derive(Default)]
+    struct Icons(HashMap<String, tray_icon::menu::Icon>);
+
+    impl Icons {
+        fn get(&mut self, g: Glyph) -> Option<tray_icon::menu::Icon> {
+            let key = format!("{g:?}");
+            if let Some(i) = self.0.get(&key) {
+                return Some(i.clone());
+            }
+            let icon = tray_icon::menu::Icon::from_rgba(glyphs::render(g), glyphs::SIZE, glyphs::SIZE).ok()?;
+            self.0.insert(key, icon.clone());
+            Some(icon)
+        }
+    }
+
+    fn build(entries: &[Entry], icons: &mut Icons) -> Vec<Box<dyn IsMenuItem>> {
         entries
             .iter()
             .map(|e| -> Box<dyn IsMenuItem> {
                 match e {
-                    Entry::Item { id, text } => Box::new(MenuItem::with_id(id.as_str(), text, true, None)),
+                    Entry::Item { id, text, icon: Some(g) } => Box::new(IconMenuItem::with_id(id.as_str(), text, true, icons.get(*g), None)),
+                    Entry::Item { id, text, icon: None } => Box::new(MenuItem::with_id(id.as_str(), text, true, None)),
                     Entry::Header(t) => Box::new(MenuItem::new(t, false, None)),
                     Entry::Check { id, text, checked } => Box::new(CheckMenuItem::with_id(id.as_str(), text, true, *checked, None)),
                     Entry::Sep => Box::new(PredefinedMenuItem::separator()),
-                    Entry::Sub { text, items } => {
-                        let kids = build(items);
+                    Entry::Sub { text, items, icon } => {
+                        let kids = build(items, icons);
                         let refs: Vec<&dyn IsMenuItem> = kids.iter().map(|k| k.as_ref()).collect();
-                        Box::new(Submenu::with_items(text, true, &refs).expect("submenu"))
+                        let sub = Submenu::with_items(text, true, &refs).expect("submenu");
+                        if let Some(i) = icon.and_then(|g| icons.get(g)) {
+                            sub.set_icon(Some(i));
+                        }
+                        Box::new(sub)
                     }
                 }
             })
@@ -306,11 +359,13 @@ mod platform {
         shown: Vec<Entry>,
         tip: String,
         hwnd: usize,
+        icons: Icons,
         _hotkeys: Option<GlobalHotKeyManager>,
     }
 
     impl Tray {
         pub fn new(ctx: &egui::Context, hwnd: usize) -> Option<Self> {
+            dark_menus();
             let (tx, rx) = channel();
             let (w, h, rgba) = {
                 let i = crate::icon();
@@ -360,7 +415,7 @@ mod platform {
 
             let (t, c) = (tx, ctx.clone());
             watch_second_launch(move |cmd| dispatch(cmd, &t, &c, hwnd));
-            Some(Self { icon, rx, shown: Vec::new(), tip: String::new(), hwnd, _hotkeys: hotkeys })
+            Some(Self { icon, rx, shown: Vec::new(), tip: String::new(), hwnd, icons: Icons::default(), _hotkeys: hotkeys })
         }
 
         pub fn poll(&self) -> Vec<Cmd> {
@@ -370,7 +425,7 @@ mod platform {
         /// Replace the menu when it changed.
         pub fn update(&mut self, entries: Vec<Entry>, tip: String) {
             if entries != self.shown {
-                let items = build(&entries);
+                let items = build(&entries, &mut self.icons);
                 let refs: Vec<&dyn IsMenuItem> = items.iter().map(|i| i.as_ref()).collect();
                 if let Ok(menu) = Menu::with_items(&refs) {
                     self.icon.set_menu(Some(Box::new(menu)));

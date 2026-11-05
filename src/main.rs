@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod dialogs;
+mod glyphs;
 mod gcal;
 mod ics;
 mod model;

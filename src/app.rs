@@ -65,6 +65,8 @@ pub struct Config {
     pub google_refresh: String,
     /// Google calendars the user turned off.
     pub google_hidden: Vec<String>,
+    /// Height of one hour in the week grid, in points.
+    pub hour_h: f32,
 }
 
 impl Default for Config {
@@ -84,6 +86,7 @@ impl Default for Config {
             google_client_secret: String::new(),
             google_refresh: String::new(),
             google_hidden: Vec::new(),
+            hour_h: 56.0,
         }
     }
 }
@@ -126,6 +129,7 @@ pub struct App {
     pub plan_project: Option<String>,
     pub plan_label: Option<String>,
     pub scroll_week: bool,
+    pub week_nav: crate::upcoming::WeekNav,
     pub search: String,
     pub focus_search: bool,
     pub editor: Option<Editor>,
@@ -177,6 +181,7 @@ impl App {
             plan_project: None,
             plan_label: None,
             scroll_week: true,
+            week_nav: Default::default(),
             search: String::new(),
             focus_search: false,
             editor: None,
@@ -199,7 +204,7 @@ impl App {
         };
         app.rebuild_events();
         if !app.cfg.token.is_empty() {
-            app.send(Job::Sync);
+            app.send(if app.store.has_reminders { Job::Sync } else { Job::FullSync });
             app.send(Job::Calendars(app.cfg.calendars.clone()));
         }
         if let Some(creds) = app.google_creds() {

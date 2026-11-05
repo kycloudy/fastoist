@@ -1,9 +1,9 @@
 //! Property pickers shared by the task dialog and quick add: project, date, deadline, priority, labels.
 
-use crate::model::{Item, Store};
+use crate::model::{Due, Item, Reminder, Store};
 use crate::theme::{self, Icon, *};
 use crate::widgets::{self, fmt_time};
-use chrono::{Datelike, Duration, NaiveDate, NaiveTime, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use eframe::egui::{self, Align2, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use serde_json::{json, Value};
 
@@ -64,6 +64,79 @@ impl DueEdit {
     }
 }
 
+/// When a reminder fires.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemKind {
+    /// Minutes before the task's due time.
+    Before(i64),
+    At(NaiveDateTime),
+}
+
+/// A reminder being edited. `id` is set once Todoist (or a pending command) knows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemEdit {
+    pub id: Option<String>,
+    pub kind: RemKind,
+}
+
+impl RemEdit {
+    pub fn from_reminder(r: &Reminder) -> Option<Self> {
+        let kind = match r.kind.as_str() {
+            "relative" => RemKind::Before(r.minute_offset.unwrap_or(0)),
+            "absolute" => {
+                let at = r.due.as_ref()?.at()?;
+                RemKind::At(at.date.and_time(at.time.unwrap_or_default()))
+            }
+            _ => return None,
+        };
+        Some(Self { id: Some(r.id.clone()), kind })
+    }
+
+    pub fn label(&self) -> String {
+        match self.kind {
+            RemKind::Before(m) => before_label(m),
+            RemKind::At(t) => format!("{} {}", t.format("%b %-d"), fmt_time(t.time())),
+        }
+    }
+
+    /// `reminder_add` arguments for task `item_id`.
+    pub fn args(&self, item_id: &str) -> Value {
+        match self.kind {
+            RemKind::Before(m) => json!({ "item_id": item_id, "type": "relative", "minute_offset": m }),
+            RemKind::At(t) => json!({ "item_id": item_id, "type": "absolute", "due": { "date": t.format("%Y-%m-%dT%H:%M:%S").to_string() } }),
+        }
+    }
+
+    /// The local copy shown until Todoist confirms the reminder.
+    pub fn to_reminder(&self, id: &str, item_id: &str) -> Reminder {
+        let (kind, minute_offset, due) = match self.kind {
+            RemKind::Before(m) => ("relative", Some(m), None),
+            RemKind::At(t) => ("absolute", None, Some(Due { date: t.format("%Y-%m-%dT%H:%M:%S").to_string(), ..Default::default() })),
+        };
+        Reminder { id: id.into(), item_id: item_id.into(), kind: kind.into(), minute_offset, due, is_deleted: false }
+    }
+}
+
+pub fn before_label(m: i64) -> String {
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{} before", if n == 1 { "" } else { "s" });
+    match m {
+        0 => "At time of task".into(),
+        m if m % 1440 == 0 => plural(m / 1440, "day"),
+        m if m % 60 == 0 => plural(m / 60, "hour"),
+        m if m < 60 => format!("{m} min before"),
+        m => format!("{}h {}m before", m / 60, m % 60),
+    }
+}
+
+/// Text for a reminders chip or row: the one reminder, or a count.
+pub fn reminders_text(r: &[RemEdit]) -> Option<String> {
+    match r {
+        [] => None,
+        [one] => Some(one.label()),
+        many => Some(format!("{} reminders", many.len())),
+    }
+}
+
 /// The editable properties of a task.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Draft {
@@ -73,6 +146,7 @@ pub struct Draft {
     pub deadline: Option<NaiveDate>,
     pub priority: u8,
     pub labels: Vec<String>,
+    pub reminders: Vec<RemEdit>,
 }
 
 impl Draft {
@@ -84,8 +158,39 @@ impl Draft {
             deadline: it.deadline.as_ref().and_then(|d| d.day()),
             priority: it.priority.max(1),
             labels: it.labels.clone(),
+            reminders: Vec::new(),
         }
     }
+
+    /// Like `from_item`, with the task's reminders.
+    pub fn load(it: &Item, store: &Store) -> Self {
+        let mut d = Self::from_item(it);
+        d.reminders = store.reminders_of(&it.id).into_iter().filter_map(RemEdit::from_reminder).collect();
+        d
+    }
+
+    /// True when the due date has a time, so reminders before the task make sense.
+    pub fn has_time(&self) -> bool {
+        matches!(self.due, Some(DueEdit::At { time: Some(_), .. }))
+    }
+}
+
+/// Commands that turn reminders `old` into `new` for task `item_id`. New reminders get temp ids in `new`.
+pub fn reminder_commands(item_id: &str, old: &[RemEdit], new: &mut [RemEdit]) -> Vec<Value> {
+    let mut cmds = Vec::new();
+    for o in old {
+        if let Some(id) = &o.id {
+            if !new.iter().any(|n| n.id.as_ref() == Some(id)) {
+                cmds.push(crate::api::command("reminder_delete", json!({ "id": id })));
+            }
+        }
+    }
+    for n in new.iter_mut().filter(|n| n.id.is_none()) {
+        let temp = uuid::Uuid::new_v4().to_string();
+        cmds.push(json!({ "type": "reminder_add", "uuid": uuid::Uuid::new_v4().to_string(), "temp_id": temp, "args": n.args(item_id) }));
+        n.id = Some(temp);
+    }
+    cmds
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,6 +200,7 @@ pub enum Field {
     Deadline,
     Priority,
     Labels,
+    Reminders,
 }
 
 /// An open picker, anchored under the control that opened it.
@@ -106,6 +212,9 @@ pub struct Pop {
     month: NaiveDate,
     focus: bool,
     repeat: bool,
+    /// Reminders: the "Before task" tab is open.
+    before: bool,
+    rem_day: NaiveDate,
 }
 
 impl Pop {
@@ -119,7 +228,17 @@ impl Pop {
             (Some(d), Field::Date) => d.label(today).0,
             _ => String::new(),
         };
-        Self { field, anchor, query, time: String::new(), month: base.with_day(1).unwrap_or(base), focus: true, repeat: false }
+        Self {
+            field,
+            anchor,
+            query,
+            time: String::new(),
+            month: base.with_day(1).unwrap_or(base),
+            focus: true,
+            repeat: false,
+            before: draft.has_time(),
+            rem_day: draft.due.as_ref().and_then(DueEdit::date).unwrap_or(today),
+        }
     }
 }
 
@@ -473,11 +592,105 @@ fn deadline_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, t
     res
 }
 
+fn tab(ui: &mut Ui, text: &str, on: bool, w: f32) -> bool {
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
+    let p = ui.painter();
+    if on {
+        p.rect_filled(r, 6.0, SELECTED);
+    } else if resp.hovered() {
+        p.rect_filled(r, 6.0, HOVER);
+    }
+    p.text(r.center(), Align2::CENTER_CENTER, text, bold_font(12.5), if on { TEXT } else { MUTED });
+    resp.clicked()
+}
+
+const BEFORE: [i64; 7] = [0, 10, 30, 45, 60, 120, 1440];
+
+fn reminders_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, today: NaiveDate) -> PopResult {
+    let mut res = PopResult::Open;
+    // Reminders already set, each with a remove button.
+    let mut remove = None;
+    for (i, r) in draft.reminders.iter().enumerate() {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+        let p = ui.painter();
+        if resp.hovered() {
+            p.rect_filled(rect, 4.0, HOVER);
+        }
+        theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 18.0, rect.center().y), Vec2::splat(15.0)), Icon::Alarm, MUTED);
+        p.text(Pos2::new(rect.left() + 36.0, rect.center().y), Align2::LEFT_CENTER, r.label(), font(13.0), TEXT);
+        let x = Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(18.0));
+        let over_x = resp.hover_pos().is_some_and(|pt| x.contains(pt));
+        theme::icon(p, x, Icon::Close, if over_x { TEXT } else { MUTED });
+        if resp.clicked() && over_x {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        draft.reminders.remove(i);
+        res = PopResult::Changed;
+    }
+    if !draft.reminders.is_empty() {
+        ui.separator();
+    }
+    let w = (ui.available_width() - 4.0) / 2.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if tab(ui, "Date & time", !pop.before, w) {
+            pop.before = false;
+        }
+        if tab(ui, "Before task", pop.before, w) {
+            pop.before = true;
+        }
+    });
+    ui.add_space(4.0);
+    let add = |draft: &mut Draft, kind: RemKind| {
+        if !draft.reminders.iter().any(|r| r.kind == kind) {
+            draft.reminders.push(RemEdit { id: None, kind });
+        }
+    };
+    if pop.before {
+        if !draft.has_time() {
+            ui.add_space(6.0);
+            ui.label(RichText::new("Give the task a time to remind you before it.").color(MUTED).font(font(12.5)));
+            ui.add_space(6.0);
+        } else {
+            for m in BEFORE {
+                let on = draft.reminders.iter().any(|r| r.kind == RemKind::Before(m));
+                if row(ui, None, &before_label(m), "", on).clicked() && !on {
+                    add(draft, RemKind::Before(m));
+                    res = PopResult::Changed;
+                }
+            }
+        }
+    } else {
+        if let Some(d) = calendar(ui, store, &mut pop.month, Some(pop.rem_day), today) {
+            pop.rem_day = d;
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            theme::icon(ui.painter(), Rect::from_center_size(ui.cursor().min + Vec2::new(8.0, 14.0), Vec2::splat(14.0)), Icon::Clock, MUTED);
+            ui.add_space(20.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut pop.time).hint_text("Time, e.g. 9am").desired_width(ui.available_width() - 50.0));
+            let go = ui.add(egui::Button::new(RichText::new("Add").color(Color32::WHITE)).fill(ACCENT)).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+            if go {
+                let t = if pop.time.trim().is_empty() { NaiveTime::from_hms_opt(9, 0, 0) } else { parse_time(&pop.time) };
+                if let Some(t) = t {
+                    add(draft, RemKind::At(pop.rem_day.and_time(t)));
+                    pop.time.clear();
+                    res = PopResult::Changed;
+                }
+            }
+        });
+    }
+    res
+}
+
 /// Show the open picker. A click outside it closes it.
 pub fn show(ctx: &egui::Context, store: &Store, pop: &mut Pop, draft: &mut Draft, today: NaiveDate) -> PopResult {
     let width = match pop.field {
         Field::Priority => 200.0,
         Field::Date | Field::Deadline => 260.0,
+        Field::Reminders => 280.0,
         _ => 300.0,
     };
     let screen = ctx.content_rect();
@@ -498,6 +711,7 @@ pub fn show(ctx: &egui::Context, store: &Store, pop: &mut Pop, draft: &mut Draft
                     Field::Priority => priority_body(ui, draft),
                     Field::Labels => labels_body(ui, store, pop, draft),
                     Field::Deadline => deadline_body(ui, store, pop, draft, today),
+                    Field::Reminders => reminders_body(ui, store, pop, draft, today),
                 }
             })
             .inner
@@ -560,6 +774,25 @@ mod tests {
         assert_eq!(parse_time("12am"), NaiveTime::from_hms_opt(0, 0, 0));
         assert_eq!(parse_time("18:05"), NaiveTime::from_hms_opt(18, 5, 0));
         assert_eq!(parse_time("x"), None);
+    }
+
+    #[test]
+    fn reminder_labels_and_commands() {
+        assert_eq!(before_label(0), "At time of task");
+        assert_eq!(before_label(30), "30 min before");
+        assert_eq!(before_label(60), "1 hour before");
+        assert_eq!(before_label(120), "2 hours before");
+        assert_eq!(before_label(1440), "1 day before");
+        assert_eq!(before_label(90), "1h 30m before");
+        let old = vec![RemEdit { id: Some("r1".into()), kind: RemKind::Before(30) }, RemEdit { id: Some("r2".into()), kind: RemKind::Before(0) }];
+        let mut new = vec![old[0].clone(), RemEdit { id: None, kind: RemKind::Before(60) }];
+        let cmds = reminder_commands("t1", &old, &mut new);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0]["type"], "reminder_delete");
+        assert_eq!(cmds[0]["args"]["id"], "r2");
+        assert_eq!(cmds[1]["type"], "reminder_add");
+        assert_eq!(cmds[1]["args"]["minute_offset"], 60);
+        assert_eq!(new[1].id.as_deref(), cmds[1]["temp_id"].as_str());
     }
 
     #[test]

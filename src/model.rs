@@ -117,6 +117,20 @@ pub struct Filter {
     pub is_deleted: bool,
 }
 
+/// A task reminder: some minutes before the task's time, or at a fixed date and time.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Reminder {
+    pub id: String,
+    pub item_id: String,
+    /// "relative", "absolute", or "location".
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub minute_offset: Option<i64>,
+    pub due: Option<Due>,
+    pub is_deleted: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct User {
@@ -137,6 +151,7 @@ pub struct SyncResponse {
     pub sections: Option<Vec<Section>>,
     pub labels: Option<Vec<Label>>,
     pub filters: Option<Vec<Filter>>,
+    pub reminders: Option<Vec<Reminder>>,
     pub user: Option<User>,
     pub sync_status: HashMap<String, Value>,
     pub temp_id_mapping: HashMap<String, String>,
@@ -238,6 +253,9 @@ pub struct Store {
     pub sections: HashMap<String, Section>,
     pub labels: HashMap<String, Label>,
     pub filters: HashMap<String, Filter>,
+    pub reminders: HashMap<String, Reminder>,
+    /// True once a full sync has loaded reminders. Caches from older versions lack them.
+    pub has_reminders: bool,
     /// Everything shown: iCal events plus visible Google events. Rebuilt, never saved.
     #[serde(skip)]
     pub events: Vec<Event>,
@@ -278,6 +296,13 @@ impl Store {
                 it.id = real.clone();
                 self.items.entry(real.clone()).or_insert(it);
             }
+            if let Some(mut r) = self.reminders.remove(temp) {
+                r.id = real.clone();
+                self.reminders.entry(real.clone()).or_insert(r);
+            }
+            for r in self.reminders.values_mut().filter(|r| &r.item_id == temp) {
+                r.item_id = real.clone();
+            }
         }
         let full = r.full_sync;
         merge(&mut self.items, r.items, full, |i| &i.id, |i| i.is_deleted || i.checked);
@@ -285,6 +310,10 @@ impl Store {
         merge(&mut self.sections, r.sections, full, |s| &s.id, |s| s.is_deleted || s.is_archived);
         merge(&mut self.labels, r.labels, full, |l| &l.id, |l| l.is_deleted);
         merge(&mut self.filters, r.filters, full, |f| &f.id, |f| f.is_deleted);
+        merge(&mut self.reminders, r.reminders, full, |x| &x.id, |x| x.is_deleted);
+        if full {
+            self.has_reminders = true;
+        }
         if let Some(u) = r.user {
             self.user = u;
         }
@@ -341,6 +370,13 @@ impl Store {
     pub fn subtasks(&self, parent: &str) -> Vec<&Item> {
         let mut v: Vec<&Item> = self.items.values().filter(|i| i.parent_id.as_deref() == Some(parent)).collect();
         v.sort_by_key(|i| i.child_order);
+        v
+    }
+
+    /// A task's time and date reminders, soonest first. Location reminders are left out.
+    pub fn reminders_of(&self, item_id: &str) -> Vec<&Reminder> {
+        let mut v: Vec<&Reminder> = self.reminders.values().filter(|r| r.item_id == item_id && r.kind != "location").collect();
+        v.sort_by_key(|r| (r.kind != "relative", r.minute_offset.map(|m| -m), r.due.as_ref().map(|d| d.date.clone())));
         v
     }
 
