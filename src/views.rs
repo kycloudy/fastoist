@@ -106,7 +106,7 @@ fn today_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             ui.label(egui::RichText::new("Events").font(bold_font(13.0)));
             for e in &events {
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
-                widgets::event_chip(ui, r, e);
+                widgets::event_chip(ui, r, e, out);
             }
         }
         if !overdue.is_empty() {
