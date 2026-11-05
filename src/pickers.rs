@@ -279,19 +279,19 @@ fn row(ui: &mut Ui, ic: Option<(Icon, Color32)>, text: &str, right: &str, select
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
     let p = ui.painter();
     if resp.hovered() || selected {
-        p.rect_filled(rect, 4.0, HOVER);
+        p.rect_filled(rect, 4.0, hover());
     }
     let mut x = rect.left() + 10.0;
     if let Some((ic, col)) = ic {
         theme::icon(p, Rect::from_center_size(Pos2::new(x + 8.0, rect.center().y), Vec2::splat(16.0)), ic, col);
         x += 26.0;
     }
-    p.text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, text, bold_font(13.5), TEXT);
+    p.text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, text, bold_font(13.5), theme::text());
     if !right.is_empty() {
-        p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, right, font(12.5), MUTED);
+        p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, right, font(12.5), muted());
     }
     if selected {
-        theme::icon(p, Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(14.0)), Icon::Check, TEXT);
+        theme::icon(p, Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(14.0)), Icon::Check, theme::text());
     }
     resp
 }
@@ -328,7 +328,7 @@ fn calendar(ui: &mut Ui, store: &Store, month: &mut NaiveDate, selected: Option<
     let cell = Vec2::new((ui.available_width() / 7.0).floor(), 32.0);
     let (head, _) = ui.allocate_exact_size(Vec2::new(cell.x * 7.0, 20.0), Sense::hover());
     for (i, d) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
-        ui.painter().text(Pos2::new(head.left() + cell.x * (i as f32 + 0.5), head.center().y), Align2::CENTER_CENTER, *d, font(11.0), MUTED);
+        ui.painter().text(Pos2::new(head.left() + cell.x * (i as f32 + 0.5), head.center().y), Align2::CENTER_CENTER, *d, font(11.0), muted());
     }
     let lead = month.weekday().num_days_from_monday() as i64;
     let first = *month - Duration::days(lead);
@@ -345,14 +345,14 @@ fn calendar(ui: &mut Ui, store: &Store, month: &mut NaiveDate, selected: Option<
         let p = ui.painter();
         let sel = selected == Some(d);
         if sel {
-            p.circle_filled(c, 12.0, ACCENT);
+            p.circle_filled(c, 12.0, accent());
         } else if resp.hovered() {
-            p.circle_filled(c, 12.0, HOVER);
+            p.circle_filled(c, 12.0, hover());
         }
-        let col = if sel { Color32::WHITE } else if d == today { ACCENT_TEXT } else if d < today { FAINT } else { TEXT };
+        let col = if sel { Color32::WHITE } else if d == today { accent_text() } else if d < today { faint() } else { text() };
         p.text(c, Align2::CENTER_CENTER, d.day().to_string(), if d == today { bold_font(13.0) } else { font(13.0) }, col);
         if !sel && store.items.values().any(|i| i.due_date() == Some(d)) {
-            p.circle_filled(Pos2::new(c.x, r.bottom() - 3.0), 1.5, MUTED);
+            p.circle_filled(Pos2::new(c.x, r.bottom() - 3.0), 1.5, muted());
         }
         if resp.clicked() {
             picked = Some(d);
@@ -392,7 +392,7 @@ fn date_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, today
         (Icon::Sun, ORANGE, "Tomorrow", (today + Duration::days(1)).format("%a").to_string(), Some(today + Duration::days(1))),
         (Icon::Upcoming, PURPLE, "Next week", next_week(today).format("%a %b %-d").to_string(), Some(next_week(today))),
         (Icon::Sofa, BLUE_SOFT, "Next weekend", next_weekend(today).format("%a %b %-d").to_string(), Some(next_weekend(today))),
-        (Icon::Slash, MUTED, "No Date", String::new(), None),
+        (Icon::Slash, muted(), "No Date", String::new(), None),
     ];
     for (ic, col, name, right, d) in quick {
         if row(ui, Some((ic, col)), name, &right, false).clicked() {
@@ -408,7 +408,7 @@ fn date_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, today
     ui.separator();
     // Time
     ui.horizontal(|ui| {
-        theme::icon(ui.painter(), Rect::from_center_size(ui.cursor().min + Vec2::new(8.0, 14.0), Vec2::splat(14.0)), Icon::Clock, MUTED);
+        theme::icon(ui.painter(), Rect::from_center_size(ui.cursor().min + Vec2::new(8.0, 14.0), Vec2::splat(14.0)), Icon::Clock, muted());
         ui.add_space(20.0);
         let current = match &draft.due {
             Some(DueEdit::At { time: Some(t), .. }) => fmt_time(*t),
@@ -434,7 +434,7 @@ fn date_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, today
         DueEdit::At { time: Some(t), .. } => format!(" at {}", t.format("%-I:%M%P")),
         _ => String::new(),
     };
-    if row(ui, Some((Icon::Repeat, MUTED)), "Repeat", "", pop.repeat).clicked() {
+    if row(ui, Some((Icon::Repeat, muted())), "Repeat", "", pop.repeat).clicked() {
         pop.repeat = !pop.repeat;
     }
     if pop.repeat {
@@ -495,14 +495,14 @@ fn project_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft) ->
                 }
             });
         };
-        pick(ui, (Icon::Inbox, MUTED), "Inbox", 0, &inbox, None, &mut first);
+        pick(ui, (Icon::Inbox, muted()), "Inbox", 0, &inbox, None, &mut first);
         if q.is_empty() {
-            ui.label(RichText::new("My Projects").font(bold_font(12.5)).color(MUTED));
+            ui.label(RichText::new("My Projects").font(bold_font(12.5)).color(muted()));
         }
         for (p, d) in store.project_tree() {
             pick(ui, (Icon::Hash, named_color(&p.color)), &p.name, d, &p.id, None, &mut first);
             for s in store.sections_of(&p.id) {
-                pick(ui, (Icon::Section, MUTED), &s.name, d + 1, &p.id, Some(&s.id), &mut first);
+                pick(ui, (Icon::Section, muted()), &s.name, d + 1, &p.id, Some(&s.id), &mut first);
             }
         }
     });
@@ -542,7 +542,7 @@ fn labels_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft) -> 
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
         for n in names.iter().filter(|n| ql.is_empty() || n.to_lowercase().contains(&ql)) {
             let on = draft.labels.contains(n);
-            let col = store.labels.values().find(|l| &l.name == n).map(|l| named_color(&l.color)).unwrap_or(MUTED);
+            let col = store.labels.values().find(|l| &l.name == n).map(|l| named_color(&l.color)).unwrap_or(muted());
             if row(ui, Some((Icon::Tag, col)), n, "", on).clicked() {
                 if on {
                     draft.labels.retain(|x| x != n);
@@ -554,7 +554,7 @@ fn labels_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft) -> 
         }
         let exists = names.iter().any(|n| n.eq_ignore_ascii_case(&q));
         if !q.is_empty() && !exists && !q.contains(' ') {
-            if row(ui, Some((Icon::Plus, MUTED)), &format!("Create \"{q}\""), "", false).clicked() {
+            if row(ui, Some((Icon::Plus, muted())), &format!("Create \"{q}\""), "", false).clicked() {
                 draft.labels.push(q.clone());
                 pop.query.clear();
                 res = PopResult::Changed;
@@ -584,7 +584,7 @@ fn deadline_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, t
     }
     if draft.deadline.is_some() {
         ui.separator();
-        if row(ui, Some((Icon::Slash, MUTED)), "No deadline", "", false).clicked() {
+        if row(ui, Some((Icon::Slash, muted())), "No deadline", "", false).clicked() {
             draft.deadline = None;
             res = PopResult::Close;
         }
@@ -596,11 +596,11 @@ fn tab(ui: &mut Ui, text: &str, on: bool, w: f32) -> bool {
     let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
     let p = ui.painter();
     if on {
-        p.rect_filled(r, 6.0, SELECTED);
+        p.rect_filled(r, 6.0, selected());
     } else if resp.hovered() {
-        p.rect_filled(r, 6.0, HOVER);
+        p.rect_filled(r, 6.0, hover());
     }
-    p.text(r.center(), Align2::CENTER_CENTER, text, bold_font(12.5), if on { TEXT } else { MUTED });
+    p.text(r.center(), Align2::CENTER_CENTER, text, bold_font(12.5), if on { theme::text() } else { muted() });
     resp.clicked()
 }
 
@@ -614,13 +614,13 @@ fn reminders_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, 
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
         let p = ui.painter();
         if resp.hovered() {
-            p.rect_filled(rect, 4.0, HOVER);
+            p.rect_filled(rect, 4.0, hover());
         }
-        theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 18.0, rect.center().y), Vec2::splat(15.0)), Icon::Alarm, MUTED);
-        p.text(Pos2::new(rect.left() + 36.0, rect.center().y), Align2::LEFT_CENTER, r.label(), font(13.0), TEXT);
+        theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 18.0, rect.center().y), Vec2::splat(15.0)), Icon::Alarm, muted());
+        p.text(Pos2::new(rect.left() + 36.0, rect.center().y), Align2::LEFT_CENTER, r.label(), font(13.0), text());
         let x = Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(18.0));
         let over_x = resp.hover_pos().is_some_and(|pt| x.contains(pt));
-        theme::icon(p, x, Icon::Close, if over_x { TEXT } else { MUTED });
+        theme::icon(p, x, Icon::Close, if over_x { text() } else { muted() });
         if resp.clicked() && over_x {
             remove = Some(i);
         }
@@ -651,7 +651,7 @@ fn reminders_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, 
     if pop.before {
         if !draft.has_time() {
             ui.add_space(6.0);
-            ui.label(RichText::new("Give the task a time to remind you before it.").color(MUTED).font(font(12.5)));
+            ui.label(RichText::new("Give the task a time to remind you before it.").color(muted()).font(font(12.5)));
             ui.add_space(6.0);
         } else {
             for m in BEFORE {
@@ -668,10 +668,10 @@ fn reminders_body(ui: &mut Ui, store: &Store, pop: &mut Pop, draft: &mut Draft, 
         }
         ui.separator();
         ui.horizontal(|ui| {
-            theme::icon(ui.painter(), Rect::from_center_size(ui.cursor().min + Vec2::new(8.0, 14.0), Vec2::splat(14.0)), Icon::Clock, MUTED);
+            theme::icon(ui.painter(), Rect::from_center_size(ui.cursor().min + Vec2::new(8.0, 14.0), Vec2::splat(14.0)), Icon::Clock, muted());
             ui.add_space(20.0);
             let r = ui.add(egui::TextEdit::singleline(&mut pop.time).hint_text("Time, e.g. 9am").desired_width(ui.available_width() - 50.0));
-            let go = ui.add(egui::Button::new(RichText::new("Add").color(Color32::WHITE)).fill(ACCENT)).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+            let go = ui.add(egui::Button::new(RichText::new("Add").color(Color32::WHITE)).fill(accent())).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
             if go {
                 let t = if pop.time.trim().is_empty() { NaiveTime::from_hms_opt(9, 0, 0) } else { parse_time(&pop.time) };
                 if let Some(t) = t {
@@ -698,8 +698,8 @@ pub fn show(ctx: &egui::Context, store: &Store, pop: &mut Pop, draft: &mut Draft
     pos.x = pos.x.min(screen.right() - width - 24.0);
     let area = egui::Area::new(egui::Id::unique("picker")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::new()
-            .fill(POPUP)
-            .stroke(Stroke::new(1.0, LINE))
+            .fill(popup())
+            .stroke(Stroke::new(1.0, line()))
             .corner_radius(8.0)
             .inner_margin(8.0)
             .shadow(egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(120) })
@@ -734,33 +734,33 @@ pub fn side_row(ui: &mut Ui, label: &str, value: Option<(Icon, Color32, String)>
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::click());
     let p = ui.painter();
     if active {
-        p.rect_filled(rect.shrink2(Vec2::new(0.0, 2.0)), 6.0, SELECTED);
+        p.rect_filled(rect.shrink2(Vec2::new(0.0, 2.0)), 6.0, selected());
     } else if resp.hovered() {
-        p.rect_filled(rect.shrink2(Vec2::new(0.0, 2.0)), 6.0, HOVER);
+        p.rect_filled(rect.shrink2(Vec2::new(0.0, 2.0)), 6.0, hover());
     }
-    p.text(Pos2::new(rect.left() + 8.0, rect.top() + 14.0), Align2::LEFT_CENTER, label, bold_font(12.5), MUTED);
+    p.text(Pos2::new(rect.left() + 8.0, rect.top() + 14.0), Align2::LEFT_CENTER, label, bold_font(12.5), muted());
     match value {
         Some((ic, col, text)) => {
             theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 16.0, rect.top() + 40.0), Vec2::splat(14.0)), ic, col);
-            p.text(Pos2::new(rect.left() + 32.0, rect.top() + 40.0), Align2::LEFT_CENTER, text, font(13.0), if ic == Icon::Hash || ic == Icon::Inbox || ic == Icon::Flag { TEXT } else { col });
+            p.text(Pos2::new(rect.left() + 32.0, rect.top() + 40.0), Align2::LEFT_CENTER, text, font(13.0), if ic == Icon::Hash || ic == Icon::Inbox || ic == Icon::Flag { theme::text() } else { col });
         }
-        None => theme::icon(p, Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.top() + 14.0), Vec2::splat(14.0)), Icon::Plus, MUTED),
+        None => theme::icon(p, Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.top() + 14.0), Vec2::splat(14.0)), Icon::Plus, muted()),
     }
-    p.line_segment([rect.left_bottom() + Vec2::new(8.0, 0.0), rect.right_bottom() - Vec2::new(8.0, 0.0)], Stroke::new(1.0, LINE));
+    p.line_segment([rect.left_bottom() + Vec2::new(8.0, 0.0), rect.right_bottom() - Vec2::new(8.0, 0.0)], Stroke::new(1.0, line()));
     resp
 }
 
 /// Text and color for showing a project/section choice.
 pub fn project_value(store: &Store, d: &Draft) -> (Icon, Color32, String) {
     if store.inbox_id() == Some(d.project_id.as_str()) || d.project_id.is_empty() {
-        return (Icon::Inbox, MUTED, "Inbox".into());
+        return (Icon::Inbox, muted(), "Inbox".into());
     }
     let p = store.projects.get(&d.project_id);
     let mut name = p.map(|p| p.name.clone()).unwrap_or_default();
     if let Some(s) = d.section_id.as_ref().and_then(|s| store.sections.get(s)) {
         name = format!("{name} / {}", s.name);
     }
-    (Icon::Hash, p.map(|p| named_color(&p.color)).unwrap_or(MUTED), name)
+    (Icon::Hash, p.map(|p| named_color(&p.color)).unwrap_or(muted()), name)
 }
 
 #[cfg(test)]

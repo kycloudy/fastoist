@@ -75,7 +75,7 @@ fn events_on(store: &Store, d: NaiveDate) -> Vec<&Event> {
 fn drop_zone(ui: &Ui, rect: Rect, id: egui::Id, date: NaiveDate, time: Option<NaiveTime>, out: &mut Vec<Action>) {
     let resp = ui.interact(rect, id, Sense::hover());
     if resp.dnd_hover_payload::<TaskDrag>().is_some() || resp.dnd_hover_payload::<EventDrag>().is_some() {
-        ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.5, accent()), egui::StrokeKind::Inside);
     }
     if let Some(p) = resp.dnd_release_payload::<TaskDrag>() {
         out.push(Action::Schedule { id: p.0.clone(), date: Some(date), time: time.map(Some) });
@@ -90,19 +90,19 @@ fn drag_preview(ui: &Ui, store: &Store) {
     if let (Some(p), Some(pos)) = (egui::DragAndDrop::payload::<TaskDrag>(ctx), ctx.pointer_interact_pos()) {
         if let Some(it) = store.items.get(&p.0) {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag")));
-            let g = painter.layout_no_wrap(it.content.clone(), font(12.5), TEXT);
+            let g = painter.layout_no_wrap(it.content.clone(), font(12.5), text());
             let r = Rect::from_min_size(pos + Vec2::new(12.0, 8.0), g.size() + Vec2::new(16.0, 8.0));
             painter.rect_filled(r, 4.0, chip_fill(it.priority));
-            painter.galley(r.min + Vec2::new(8.0, 4.0), g, TEXT);
+            painter.galley(r.min + Vec2::new(8.0, 4.0), g, text());
         }
     }
     if let (Some(p), Some(pos)) = (egui::DragAndDrop::payload::<EventDrag>(ctx), ctx.pointer_interact_pos()) {
         if let Some(e) = store.gevents.iter().find(|e| e.key() == p.0) {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag")));
-            let g = painter.layout_no_wrap(e.title.clone(), font(12.5), TEXT);
+            let g = painter.layout_no_wrap(e.title.clone(), font(12.5), text());
             let r = Rect::from_min_size(pos + Vec2::new(12.0, 8.0), g.size() + Vec2::new(16.0, 8.0));
             painter.rect_filled(r, 4.0, widgets::event_color(e).gamma_multiply(0.7));
-            painter.galley(r.min + Vec2::new(8.0, 4.0), g, TEXT);
+            painter.galley(r.min + Vec2::new(8.0, 4.0), g, text());
         }
     }
 }
@@ -184,7 +184,7 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
     for i in 0..7 {
         let d = start + Duration::days(i);
         let r = Rect::from_min_size(Pos2::new(full.left() + i as f32 * col_w, full.top()), Vec2::new(col_w, head_h));
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, d.format("%a").to_string(), font(13.0), MUTED);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, d.format("%a").to_string(), font(13.0), muted());
     }
     ui.allocate_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), head_h)), Sense::hover());
 
@@ -205,10 +205,10 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
                 let in_month = d.month() == first.month();
                 let p = ui.painter();
                 if !in_month {
-                    p.rect_filled(cell, 0.0, Color32::from_rgb(0x1b, 0x1b, 0x1b));
+                    p.rect_filled(cell, 0.0, sunken());
                 }
-                p.line_segment([cell.left_top(), cell.right_top()], Stroke::new(1.0, LINE));
-                p.line_segment([cell.right_top(), cell.right_bottom()], Stroke::new(1.0, LINE));
+                p.line_segment([cell.left_top(), cell.right_top()], Stroke::new(1.0, line()));
+                p.line_segment([cell.right_top(), cell.right_bottom()], Stroke::new(1.0, line()));
                 drop_zone(ui, cell, egui::Id::unique(("mcell", d)), d, None, out);
 
                 // Day number, top right.
@@ -217,10 +217,10 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
                 if d == today {
                     let g = p.layout_no_wrap(label, bold_font(13.0), Color32::WHITE);
                     let r = Rect::from_min_size(Pos2::new(num_pos.x - g.size().x - 5.0, num_pos.y - 10.0), g.size() + Vec2::new(10.0, 2.0));
-                    p.rect_filled(r, 4.0, ACCENT);
+                    p.rect_filled(r, 4.0, accent());
                     p.galley(r.min + Vec2::new(5.0, 1.0), g, Color32::WHITE);
                 } else {
-                    p.text(num_pos, Align2::RIGHT_CENTER, label, font(13.0), if in_month { TEXT } else { FAINT });
+                    p.text(num_pos, Align2::RIGHT_CENTER, label, font(13.0), if in_month { text() } else { faint() });
                 }
 
                 // Chips: completed, open tasks, then events.
@@ -253,7 +253,7 @@ fn month(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut 
                 if total > shown {
                     let r = chip(y);
                     let resp = ui.interact(r, egui::Id::unique(("more", d)), Sense::click());
-                    ui.painter().text(Pos2::new(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, format!("{} more", total - shown), bold_font(12.5), if resp.hovered() { ACCENT_TEXT } else { TEXT });
+                    ui.painter().text(Pos2::new(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, format!("{} more", total - shown), bold_font(12.5), if resp.hovered() { accent_text() } else { text() });
                     if resp.clicked() {
                         out.push(Action::ShowWeek(d));
                     }
@@ -305,10 +305,10 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
         if d == today {
             let g = ui.painter().layout_no_wrap(txt, bold_font(13.0), Color32::WHITE);
             let br = Rect::from_center_size(r.center(), g.size() + Vec2::new(12.0, 4.0));
-            ui.painter().rect_filled(br, 4.0, ACCENT);
+            ui.painter().rect_filled(br, 4.0, accent());
             ui.painter().galley(br.min + Vec2::new(6.0, 2.0), g, Color32::WHITE);
         } else {
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, font(13.0), MUTED);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, font(13.0), muted());
         }
     }
 
@@ -325,7 +325,7 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
     let rows = all_day.iter().map(|(a, b, c)| a.len() + b.len() + c.len()).max().unwrap_or(0).clamp(1, 6);
     let ad_h = rows as f32 * (CHIP_H + 2.0) + 6.0;
     let ad_top = full.top() + head_h;
-    ui.painter().text(Pos2::new(full.left() + gutter - 8.0, ad_top + 12.0), Align2::RIGHT_CENTER, "All day", font(11.5), MUTED);
+    ui.painter().text(Pos2::new(full.left() + gutter - 8.0, ad_top + 12.0), Align2::RIGHT_CENTER, "All day", font(11.5), muted());
     for i in 0..7 {
         let d = start + Duration::days(i);
         let cell = Rect::from_min_size(Pos2::new(col_x(i), ad_top), Vec2::new(col_w, ad_h));
@@ -353,7 +353,7 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
         }
     }
     let used = head_h + ad_h;
-    ui.painter().line_segment([Pos2::new(full.left(), full.top() + used), Pos2::new(full.right(), full.top() + used)], Stroke::new(1.0, LINE));
+    ui.painter().line_segment([Pos2::new(full.left(), full.top() + used), Pos2::new(full.right(), full.top() + used)], Stroke::new(1.0, line()));
     ui.allocate_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), used + 1.0)), Sense::hover());
 
     // Zoom: scroll or drag on the hour bar, or Ctrl+scroll anywhere. Shift+scroll or a sideways swipe changes the week.
@@ -408,15 +408,15 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
         let p = ui.painter().clone();
         for h in 0..24 {
             let y = grid.top() + h as f32 * hour_h;
-            p.line_segment([Pos2::new(grid.left() + gutter, y), Pos2::new(grid.right(), y)], Stroke::new(1.0, LINE));
+            p.line_segment([Pos2::new(grid.left() + gutter, y), Pos2::new(grid.right(), y)], Stroke::new(1.0, line()));
             if h > 0 && h % label_every == 0 {
                 let t = NaiveTime::from_hms_opt(h, 0, 0).unwrap();
-                p.text(Pos2::new(grid.left() + gutter - 8.0, y), Align2::RIGHT_CENTER, widgets::fmt_time(t), font(11.5), MUTED);
+                p.text(Pos2::new(grid.left() + gutter - 8.0, y), Align2::RIGHT_CENTER, widgets::fmt_time(t), font(11.5), muted());
             }
         }
         for i in 0..7 {
             let x = grid.left() + gutter + i as f32 * col_w;
-            p.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0, LINE));
+            p.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0, line()));
         }
         for i in 0..7 {
             let d = start + Duration::days(i);
@@ -462,13 +462,13 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                     }
                     Block::Ev(e) => {
                         let painter = ui.painter_at(r);
-                        painter.rect_filled(r, 4.0, Color32::from_rgb(0x2b, 0x2b, 0x2b));
+                        painter.rect_filled(r, 4.0, surface());
                         painter.rect_filled(Rect::from_min_size(r.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, r.height() - 6.0)), 1.0, widgets::event_color(e));
-                        let g = painter.layout(e.title.clone(), bold_font(12.0), TEXT, r.width() - 14.0);
+                        let g = painter.layout(e.title.clone(), bold_font(12.0), text(), r.width() - 14.0);
                         let th = g.size().y;
-                        painter.galley(r.min + Vec2::new(10.0, 4.0), g, TEXT);
+                        painter.galley(r.min + Vec2::new(10.0, 4.0), g, text());
                         if r.height() > th + 22.0 {
-                            painter.text(r.min + Vec2::new(10.0, 6.0 + th), Align2::LEFT_TOP, format!("{}–{}", widgets::fmt_time(e.start.time()), widgets::fmt_time(e.end.time())), font(11.5), MUTED);
+                            painter.text(r.min + Vec2::new(10.0, 6.0 + th), Align2::LEFT_TOP, format!("{}–{}", widgets::fmt_time(e.start.time()), widgets::fmt_time(e.end.time())), font(11.5), muted());
                         }
                         widgets::event_interact(ui, r, e, out);
                     }
@@ -476,8 +476,8 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
             }
             if d == today {
                 let y = y_of(Local::now().time());
-                p.line_segment([Pos2::new(x, y), Pos2::new(x + col_w, y)], Stroke::new(2.0, ACCENT));
-                p.circle_filled(Pos2::new(x, y), 4.0, ACCENT);
+                p.line_segment([Pos2::new(x, y), Pos2::new(x + col_w, y)], Stroke::new(2.0, accent()));
+                p.circle_filled(Pos2::new(x, y), 4.0, accent());
             }
         }
         drag_zoom
@@ -572,7 +572,7 @@ pub fn plan_panel(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Plan").font(bold_font(17.0)));
-        ui.label(egui::RichText::new((a.len() + b.len()).to_string()).color(MUTED));
+        ui.label(egui::RichText::new((a.len() + b.len()).to_string()).color(muted()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::icon_button(ui, Icon::Panel, "Close Plan").clicked() {
                 app.cfg.plan_open = false;

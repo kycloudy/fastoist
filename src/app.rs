@@ -1,7 +1,8 @@
 //! App state, sidebar, navigation, and how user actions reach Todoist.
 
 use crate::api::{self, add_command, command, AddExtras, Job, Msg};
-use crate::dialogs::{Adder, Editor, EventEditor, Settings};
+use crate::dialogs::{Adder, Editor, EventEditor};
+use crate::settings::Settings;
 use crate::gcal::Creds;
 use crate::model::{Due, Event, Item, Store};
 use crate::theme::{self, Icon, *};
@@ -67,6 +68,8 @@ pub struct Config {
     pub google_hidden: Vec<String>,
     /// Height of one hour in the week grid, in points.
     pub hour_h: f32,
+    pub mode: theme::Mode,
+    pub accent: theme::Accent,
 }
 
 impl Default for Config {
@@ -87,11 +90,13 @@ impl Default for Config {
             google_refresh: String::new(),
             google_hidden: Vec::new(),
             hour_h: 56.0,
+            mode: theme::Mode::Dark,
+            accent: theme::Accent::Red,
         }
     }
 }
 
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("Fastoist")
 }
 
@@ -152,10 +157,9 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::install(&cc.egui_ctx);
-        // Dark title bar on Windows 10 and 11.
-        cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
         let mut cfg: Config = load("config.json");
+        // Also sets the title bar to match on Windows 10 and 11.
+        theme::install(&cc.egui_ctx, cfg.mode, cfg.accent);
         if let Ok(t) = std::env::var("TODOIST_TOKEN") {
             if cfg.token.is_empty() {
                 cfg.token = t;
@@ -761,9 +765,9 @@ impl App {
         ui.horizontal(|ui| {
             let name = if self.store.user.full_name.is_empty() { "Todoist".to_string() } else { self.store.user.full_name.clone() };
             let (r, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
-            ui.painter().circle_filled(r.center(), 12.0, Color32::from_rgb(0x5a, 0x5a, 0x5a));
+            ui.painter().circle_filled(r.center(), 12.0, raised_hover());
             let initial = name.chars().next().unwrap_or('T').to_uppercase().to_string();
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, initial, bold_font(12.0), TEXT);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, initial, bold_font(12.0), text());
             ui.label(egui::RichText::new(name).font(bold_font(14.0)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::icon_button(ui, Icon::Sidebar, "Close sidebar (M)").clicked() {
@@ -785,12 +789,12 @@ impl App {
         // Add task
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 6.0, HOVER);
+            ui.painter().rect_filled(rect, 6.0, hover());
         }
         let c = Pos2::new(rect.left() + 16.0, rect.center().y);
-        ui.painter().circle_filled(c, 10.0, ACCENT);
+        ui.painter().circle_filled(c, 10.0, accent());
         theme::icon(ui.painter(), Rect::from_center_size(c, Vec2::splat(12.0)), Icon::Plus, Color32::WHITE);
-        ui.painter().text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, "Add task", bold_font(14.0), ACCENT_TEXT);
+        ui.painter().text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, "Add task", bold_font(14.0), accent_text());
         if resp.on_hover_text("Q").clicked() {
             out.push(Action::AddTask(self.context_defaults()));
         }
@@ -805,7 +809,7 @@ impl App {
         ];
         for (ic, label, v, n) in rows {
             let sel = self.view == v;
-            if widgets::nav_row(ui, ic, MUTED, label, n, sel, 0.0).clicked() {
+            if widgets::nav_row(ui, ic, muted(), label, n, sel, 0.0).clicked() {
                 out.push(Action::Go(v));
             }
         }
@@ -863,7 +867,7 @@ impl App {
                     let chev = Rect::from_center_size(Pos2::new(resp.rect.right() - 34.0, resp.rect.center().y), Vec2::splat(18.0));
                     let hit = ui.interact(chev, ui.scope_id().with(("chev", &id)), Sense::click());
                     if resp.hovered() || hit.hovered() {
-                        theme::icon(ui.painter(), chev, if collapsed { Icon::Right } else { Icon::Down }, MUTED);
+                        theme::icon(ui.painter(), chev, if collapsed { Icon::Right } else { Icon::Down }, muted());
                     }
                     if hit.clicked() {
                         if collapsed {
@@ -954,10 +958,10 @@ impl App {
         let mut undo = false;
         let mut close = false;
         egui::Area::new(egui::Id::unique("toast")).anchor(Align2::LEFT_BOTTOM, Vec2::new(20.0, -20.0)).show(ctx, |ui| {
-            egui::Frame::new().fill(Color32::from_rgb(0x33, 0x33, 0x33)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+            egui::Frame::new().fill(raised()).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&t.text).color(if t.error { RED } else { TEXT }));
-                    if t.undo.is_some() && ui.link(egui::RichText::new("Undo").color(ACCENT_TEXT)).clicked() {
+                    ui.label(egui::RichText::new(&t.text).color(if t.error { RED } else { text() }));
+                    if t.undo.is_some() && ui.link(egui::RichText::new("Undo").color(accent_text())).clicked() {
                         undo = true;
                     }
                     if widgets::icon_button(ui, Icon::Close, "Dismiss").clicked() {
@@ -981,7 +985,7 @@ impl App {
             ui.add_space(16.0);
             ui.add(egui::TextEdit::singleline(&mut token).password(true).hint_text("Todoist API token").desired_width(360.0));
             ui.add_space(8.0);
-            let go = ui.add_enabled(!token.trim().is_empty(), egui::Button::new(egui::RichText::new("Connect").color(Color32::WHITE)).fill(ACCENT));
+            let go = ui.add_enabled(!token.trim().is_empty(), egui::Button::new(egui::RichText::new("Connect").color(Color32::WHITE)).fill(accent()));
             ui.add_space(8.0);
             ui.hyperlink_to("Get your token", "https://app.todoist.com/app/settings/integrations/developer");
             if go.clicked() || (ui.input(|i| i.key_pressed(Key::Enter)) && !token.trim().is_empty()) {
@@ -1006,7 +1010,7 @@ fn section_title(ui: &mut egui::Ui, title: &str) {
     ui.add_space(14.0);
     ui.horizontal(|ui| {
         ui.add_space(6.0);
-        ui.label(egui::RichText::new(title).font(bold_font(13.0)).color(MUTED));
+        ui.label(egui::RichText::new(title).font(bold_font(13.0)).color(muted()));
     });
     ui.add_space(2.0);
 }
@@ -1025,7 +1029,7 @@ impl eframe::App for App {
 
         let mut out = Vec::new();
         if self.cfg.token.is_empty() {
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(BG)).show(ui, |ui| self.sign_in(ui));
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(bg())).show(ui, |ui| self.sign_in(ui));
             return;
         }
 
@@ -1035,7 +1039,7 @@ impl eframe::App for App {
                 .default_size(280.0)
                 .min_size(220.0)
                 .max_size(420.0)
-                .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(egui::Margin::symmetric(10, 4)))
+                .frame(egui::Frame::new().fill(sidebar()).inner_margin(egui::Margin::symmetric(10, 4)))
                 .show(ui, |ui| self.sidebar(ui, &mut out));
         }
 
@@ -1044,11 +1048,11 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(340.0)
                 .min_size(260.0)
-                .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(14, 8)).stroke(egui::Stroke::new(1.0, LINE)))
+                .frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(14, 8)).stroke(egui::Stroke::new(1.0, line())))
                 .show(ui, |ui| crate::upcoming::plan_panel(self, ui, &mut out));
         }
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(0, 6))).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(0, 6))).show(ui, |ui| {
             self.top_bar(ui);
             match self.view.clone() {
                 View::Upcoming => crate::upcoming::show(self, ui, &mut out),

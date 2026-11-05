@@ -1,7 +1,7 @@
-//! Task dialog, quick add, and settings.
+//! Task dialog and quick add.
 
 use crate::api::AddExtras;
-use crate::app::{App, Config};
+use crate::app::App;
 use crate::model::{Deadline, Due, Event, Item, Store};
 use crate::pickers::{self, DueEdit, Draft, Field, Pop, PopResult};
 use crate::theme::{self, Icon, *};
@@ -142,7 +142,7 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
     let side_w = 260.0;
 
     let modal = egui::Modal::new(egui::Id::unique("editor"))
-        .frame(egui::Frame::new().fill(Color32::from_rgb(0x1f, 0x1f, 0x1f)).corner_radius(10.0).stroke(Stroke::new(1.0, LINE)))
+        .frame(egui::Frame::new().fill(bg()).corner_radius(10.0).stroke(Stroke::new(1.0, line())))
         .show(ctx, |ui| {
             ui.set_width(w);
             ui.set_height(h);
@@ -153,21 +153,21 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
             let (head, _) = ui.allocate_exact_size(Vec2::new(w, 46.0), Sense::hover());
             let (ic, col, name) = pickers::project_value(store, &Draft::from_item(&item));
             theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(head.left() + 24.0, head.center().y), Vec2::splat(14.0)), ic, col);
-            ui.painter().text(Pos2::new(head.left() + 38.0, head.center().y), Align2::LEFT_CENTER, name, bold_font(13.0), TEXT);
+            ui.painter().text(Pos2::new(head.left() + 38.0, head.center().y), Align2::LEFT_CENTER, name, bold_font(13.0), text());
             let xr = Rect::from_center_size(Pos2::new(head.right() - 26.0, head.center().y), Vec2::splat(28.0));
             let xresp = ui.interact(xr, ui.scope_id().with("close"), Sense::click());
             if xresp.hovered() {
-                ui.painter().rect_filled(xr, 6.0, HOVER);
+                ui.painter().rect_filled(xr, 6.0, hover());
             }
-            theme::icon(ui.painter(), xr, Icon::Close, MUTED);
+            theme::icon(ui.painter(), xr, Icon::Close, muted());
             if xresp.on_hover_text("Close (Esc)").clicked() {
                 close = true;
             }
-            ui.painter().line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, LINE));
+            ui.painter().line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, line()));
 
             let body = Rect::from_min_size(Pos2::new(head.left(), head.bottom()), Vec2::new(w, h - 46.0));
             let side = Rect::from_min_max(Pos2::new(body.right() - side_w, body.top()), body.max);
-            ui.painter().rect_filled(side, egui::CornerRadius { nw: 0, ne: 0, sw: 0, se: 10 }, Color32::from_rgb(0x26, 0x26, 0x26));
+            ui.painter().rect_filled(side, egui::CornerRadius { nw: 0, ne: 0, sw: 0, se: 10 }, sidebar());
 
             // Left: title, description, sub-tasks.
             let left = Rect::from_min_max(body.min + Vec2::new(20.0, 16.0), Pos2::new(side.left() - 20.0, body.bottom() - 10.0));
@@ -211,7 +211,7 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
                                 }
                             } else {
                                 let (r, resp) = ui.allocate_exact_size(Vec2::new(140.0, 30.0), Sense::click());
-                                let col = if resp.hovered() { ACCENT_TEXT } else { MUTED };
+                                let col = if resp.hovered() { accent_text() } else { muted() };
                                 theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 8.0, r.center().y), Vec2::splat(12.0)), Icon::Plus, col);
                                 ui.painter().text(Pos2::new(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, "Add sub-task", bold_font(13.0), col);
                                 if resp.clicked() {
@@ -233,9 +233,9 @@ fn editor_ui(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
                     (Field::Project, "Project", Some(pickers::project_value(store, d))),
                     (Field::Date, "Date", d.due.as_ref().map(|x| { let (t, c) = x.label(today); (Icon::Calendar, c, t) })),
                     (Field::Deadline, "Deadline", d.deadline.map(|x| { let (t, c) = widgets::deadline_label(x, today); (Icon::Deadline, c, t) })),
-                    (Field::Reminders, "Reminders", pickers::reminders_text(&d.reminders).map(|t| (Icon::Alarm, TEXT, t))),
+                    (Field::Reminders, "Reminders", pickers::reminders_text(&d.reminders).map(|t| (Icon::Alarm, text(), t))),
                     (Field::Priority, "Priority", Some((Icon::Flag, priority_color(d.priority), format!("P{}", 5 - d.priority)))),
-                    (Field::Labels, "Labels", (!d.labels.is_empty()).then(|| (Icon::Tag, MUTED, d.labels.join(", ")))),
+                    (Field::Labels, "Labels", (!d.labels.is_empty()).then(|| (Icon::Tag, muted(), d.labels.join(", ")))),
                 ];
                 let mut clicked = None;
                 for (f, label, value) in rows {
@@ -316,14 +316,14 @@ fn chip(ui: &mut Ui, ic: Icon, col: Color32, text: &str, clear: bool) -> (egui::
     let x = Rect::from_center_size(Pos2::new(r.right() - 14.0, r.center().y), Vec2::splat(16.0));
     let over_x = clear && resp.hover_pos().is_some_and(|p| x.contains(p));
     let p = ui.painter();
-    p.rect(r, 6.0, if resp.hovered() && !over_x { HOVER } else { POPUP }, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    p.rect(r, 6.0, if resp.hovered() && !over_x { hover() } else { popup() }, Stroke::new(1.0, line()), egui::StrokeKind::Inside);
     theme::icon(p, Rect::from_center_size(Pos2::new(r.left() + 14.0, r.center().y), Vec2::splat(14.0)), ic, col);
     p.galley(Pos2::new(r.left() + 26.0, r.center().y - g.size().y / 2.0), g, col);
     if clear {
         if over_x {
-            p.rect_filled(x, 3.0, HOVER);
+            p.rect_filled(x, 3.0, hover());
         }
-        theme::icon(p, x.shrink(2.0), Icon::Close, if over_x { TEXT } else { MUTED });
+        theme::icon(p, x.shrink(2.0), Icon::Close, if over_x { theme::text() } else { muted() });
     }
     let cleared = resp.clicked() && over_x;
     (resp, cleared)
@@ -332,14 +332,14 @@ fn chip(ui: &mut Ui, ic: Icon, col: Color32, text: &str, clear: bool) -> (egui::
 fn menu_row(ui: &mut Ui, ic: Icon, name: &str, key: &str) -> bool {
     let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, 4.0, HOVER);
+        ui.painter().rect_filled(r, 4.0, hover());
     }
-    theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 16.0, r.center().y), Vec2::splat(16.0)), ic, MUTED);
-    ui.painter().text(Pos2::new(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, name, font(13.5), TEXT);
+    theme::icon(ui.painter(), Rect::from_center_size(Pos2::new(r.left() + 16.0, r.center().y), Vec2::splat(16.0)), ic, muted());
+    ui.painter().text(Pos2::new(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, name, font(13.5), text());
     if !key.is_empty() {
         let kr = Rect::from_center_size(Pos2::new(r.right() - 16.0, r.center().y), Vec2::new(16.0, 16.0));
-        ui.painter().rect_filled(kr, 3.0, Color32::from_rgb(0x3a, 0x3a, 0x3a));
-        ui.painter().text(kr.center(), Align2::CENTER_CENTER, key, bold_font(10.5), MUTED);
+        ui.painter().rect_filled(kr, 3.0, raised());
+        ui.painter().text(kr.center(), Align2::CENTER_CENTER, key, bold_font(10.5), muted());
     }
     resp.clicked()
 }
@@ -357,8 +357,8 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
 
     let area = egui::Area::new(egui::Id::unique("adder")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::new()
-            .fill(POPUP)
-            .stroke(Stroke::new(1.0, LINE))
+            .fill(popup())
+            .stroke(Stroke::new(1.0, line()))
             .corner_radius(10.0)
             .inner_margin(egui::Margin::symmetric(12, 8))
             .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(140) })
@@ -384,14 +384,14 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
                             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                             let (r, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
                             plus_rect = r;
-                            ui.painter().rect_filled(r, 6.0, if resp.hovered() || ad.menu { Color32::from_rgb(0x44, 0x44, 0x44) } else { Color32::from_rgb(0x38, 0x38, 0x38) });
-                            theme::icon(ui.painter(), r, Icon::Plus, TEXT);
+                            ui.painter().rect_filled(r, 6.0, if resp.hovered() || ad.menu { raised_hover() } else { raised() });
+                            theme::icon(ui.painter(), r, Icon::Plus, text());
                             if resp.on_hover_text("More").clicked() {
                                 ad.menu = !ad.menu;
                                 ad.pop = None;
                             }
                             let mut put = |ui: &mut Ui, f: Field, ic: Icon, col: Color32, text: &str, set: bool| {
-                                let (r, x) = chip(ui, ic, if set { col } else { MUTED }, text, set);
+                                let (r, x) = chip(ui, ic, if set { col } else { muted() }, text, set);
                                 if x {
                                     clear = Some(f);
                                 } else if r.clicked() {
@@ -405,33 +405,33 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
                                     let (t, c) = due.label(today);
                                     put(ui, Field::Date, Icon::Calendar, c, &t, true);
                                 }
-                                None => put(ui, Field::Date, Icon::Calendar, MUTED, "Date", false),
+                                None => put(ui, Field::Date, Icon::Calendar, muted(), "Date", false),
                             }
                             let rem = pickers::reminders_text(&d.reminders);
-                            put(ui, Field::Reminders, Icon::Alarm, TEXT, rem.as_deref().unwrap_or("Reminders"), rem.is_some());
+                            put(ui, Field::Reminders, Icon::Alarm, text(), rem.as_deref().unwrap_or("Reminders"), rem.is_some());
                             if d.priority > 1 {
                                 put(ui, Field::Priority, Icon::Flag, priority_color(d.priority), &format!("P{}", 5 - d.priority), true);
                             } else {
-                                put(ui, Field::Priority, Icon::Flag, MUTED, "Priority", false);
+                                put(ui, Field::Priority, Icon::Flag, muted(), "Priority", false);
                             }
                             match d.deadline {
                                 Some(dl) => {
                                     let (t, c) = widgets::deadline_label(dl, today);
                                     put(ui, Field::Deadline, Icon::Deadline, c, &t, true);
                                 }
-                                None => put(ui, Field::Deadline, Icon::Deadline, MUTED, "Deadline", false),
+                                None => put(ui, Field::Deadline, Icon::Deadline, muted(), "Deadline", false),
                             }
                             if d.labels.is_empty() {
-                                put(ui, Field::Labels, Icon::Tag, MUTED, "Labels", false);
+                                put(ui, Field::Labels, Icon::Tag, muted(), "Labels", false);
                             } else {
-                                put(ui, Field::Labels, Icon::Tag, TEXT, &d.labels.join(", "), true);
+                                put(ui, Field::Labels, Icon::Tag, text(), &d.labels.join(", "), true);
                             }
                         });
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
                         let ready = !ad.text.trim().is_empty();
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
-                        let fill = if ready { if resp.hovered() { ACCENT.gamma_multiply(1.15) } else { ACCENT } } else { ACCENT.gamma_multiply(0.45) };
+                        let fill = if ready { if resp.hovered() { accent().gamma_multiply(1.15) } else { accent() } } else { accent().gamma_multiply(0.45) };
                         ui.painter().rect_filled(r, 6.0, fill);
                         theme::icon(ui.painter(), r, Icon::Send, Color32::WHITE);
                         if resp.on_hover_text("Add task (Enter)").clicked() {
@@ -456,7 +456,7 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
     // The "+" menu.
     if ad.menu {
         let mr = egui::Area::new(egui::Id::unique("adder_menu")).order(egui::Order::Foreground).fixed_pos(plus_rect.left_bottom() + Vec2::new(0.0, 6.0)).show(ctx, |ui| {
-            egui::Frame::new().fill(POPUP).stroke(Stroke::new(1.0, LINE)).corner_radius(8.0).inner_margin(6.0).show(ui, |ui| {
+            egui::Frame::new().fill(popup()).stroke(Stroke::new(1.0, line())).corner_radius(8.0).inner_margin(6.0).show(ui, |ui| {
                 ui.set_width(270.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let rows = [
@@ -521,128 +521,6 @@ fn adder_ui(app: &mut App, ctx: &egui::Context) {
     }
     if !close {
         app.adder = Some(ad);
-    }
-}
-
-pub struct Settings {
-    token: String,
-    calendars: String,
-    sound: bool,
-    google_id: String,
-    google_secret: String,
-}
-
-impl Settings {
-    pub fn new(cfg: &Config) -> Self {
-        Self {
-            token: cfg.token.clone(),
-            calendars: cfg.calendars.join("\n"),
-            sound: cfg.sound,
-            google_id: cfg.google_client_id.clone(),
-            google_secret: cfg.google_client_secret.clone(),
-        }
-    }
-}
-
-fn google_section(app: &mut App, s: &mut Settings, ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.label("Google Calendar");
-        if !app.google_signed_in() {
-            ui.hyperlink_to(RichText::new("Create client ID").size(12.0), "https://console.cloud.google.com/apis/credentials");
-        }
-    });
-    if app.google_signed_in() {
-        let account = app.store.gcals.iter().find(|c| c.primary).map(|c| c.id.clone()).unwrap_or_else(|| "Signed in".into());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(account).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Sign out").clicked() {
-                    app.google_sign_out();
-                }
-            });
-        });
-        let cals = app.store.gcals.clone();
-        egui::ScrollArea::vertical().id_salt("gcals").max_height(150.0).show(ui, |ui| {
-            for c in &cals {
-                let mut shown = !app.cfg.google_hidden.contains(&c.id);
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut shown, "").changed() {
-                        app.google_toggle_calendar(&c.id);
-                    }
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                    ui.painter().circle_filled(r.center(), 5.0, Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
-                    ui.label(&c.name);
-                });
-            }
-        });
-    } else {
-        ui.add(egui::TextEdit::singleline(&mut s.google_id).hint_text("Client ID").desired_width(f32::INFINITY));
-        ui.add(egui::TextEdit::singleline(&mut s.google_secret).password(true).hint_text("Client secret").desired_width(f32::INFINITY));
-        ui.horizontal(|ui| {
-            let label = if app.google_waiting { "Waiting for browser…" } else { "Sign in with Google" };
-            let ready = !s.google_id.trim().is_empty() && !app.google_waiting;
-            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
-                app.google_sign_in(s.google_id.clone(), s.google_secret.clone());
-            }
-        });
-    }
-}
-
-fn settings_ui(app: &mut App, ctx: &egui::Context) {
-    let Some(mut s) = app.settings.take() else { return };
-    let mut close = false;
-    let mut save = false;
-    let modal = egui::Modal::new(egui::Id::unique("settings")).frame(egui::Frame::new().fill(POPUP).corner_radius(12.0).inner_margin(20.0)).show(ctx, |ui| {
-        ui.set_width(520.0);
-        ui.label(RichText::new("Settings").font(bold_font(18.0)));
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.label("Todoist API token");
-            ui.hyperlink_to(RichText::new("Get token").size(12.0), "https://app.todoist.com/app/settings/integrations/developer");
-        });
-        ui.add(egui::TextEdit::singleline(&mut s.token).password(true).desired_width(f32::INFINITY));
-        ui.add_space(10.0);
-        ui.label("Calendar feeds (iCal URLs, one per line)");
-        ui.add(egui::TextEdit::multiline(&mut s.calendars).hint_text("https://calendar.google.com/calendar/ical/…/basic.ics").desired_rows(3).desired_width(f32::INFINITY));
-        ui.add_space(10.0);
-        google_section(app, &mut s, ui);
-        ui.add_space(10.0);
-        if ui.checkbox(&mut app.cfg.stay_in_tray, "Stay running in tray").changed() {
-            app.save_config();
-        }
-        ui.checkbox(&mut s.sound, "Play a sound when I complete a task");
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            if ui.button("Full resync").clicked() {
-                app.send(crate::api::Job::FullSync);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                    save = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
-            });
-        });
-    });
-    if modal.should_close() {
-        close = true;
-    }
-    if save {
-        let urls: Vec<String> = s.calendars.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-        if s.token.trim() != app.cfg.token {
-            app.set_token(s.token.clone());
-        }
-        if urls != app.cfg.calendars {
-            app.set_calendars(urls);
-        }
-        app.cfg.sound = s.sound;
-        app.save_config();
-        close = true;
-    }
-    if !close {
-        app.settings = Some(s);
     }
 }
 
@@ -746,7 +624,7 @@ fn event_ui(app: &mut App, ctx: &egui::Context) {
     let mut save = false;
     let mut delete = false;
     let writable: Vec<(String, String)> = app.store.gcals.iter().filter(|c| c.writable).map(|c| (c.id.clone(), c.name.clone())).collect();
-    let modal = egui::Modal::new(egui::Id::unique("event")).frame(egui::Frame::new().fill(POPUP).corner_radius(12.0).inner_margin(20.0)).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("event")).frame(egui::Frame::new().fill(popup()).corner_radius(12.0).inner_margin(20.0)).show(ctx, |ui| {
         ui.set_width(420.0);
         ui.label(RichText::new(if ed.key.is_some() { "Edit event" } else { "New event" }).font(bold_font(18.0)));
         ui.add_space(10.0);
@@ -778,7 +656,7 @@ fn event_ui(app: &mut App, ctx: &egui::Context) {
         }
         if !ed.error.is_empty() {
             ui.add_space(8.0);
-            ui.label(RichText::new(&ed.error).color(Color32::from_rgb(0xff, 0x7a, 0x6e)));
+            ui.label(RichText::new(&ed.error).color(RED));
         }
         ui.add_space(14.0);
         ui.horizontal(|ui| {
@@ -786,7 +664,7 @@ fn event_ui(app: &mut App, ctx: &egui::Context) {
                 delete = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(accent())).clicked() {
                     save = true;
                 }
                 if ui.button("Cancel").clicked() {
@@ -842,7 +720,7 @@ pub fn show(app: &mut App, ctx: &egui::Context, out: &mut Vec<Action>) {
     editor_ui(app, ctx, out);
     adder_ui(app, ctx);
     event_ui(app, ctx);
-    settings_ui(app, ctx);
+    crate::settings::show(app, ctx);
 }
 
 #[cfg(test)]

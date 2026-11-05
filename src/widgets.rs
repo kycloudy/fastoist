@@ -78,7 +78,7 @@ pub fn due_label(at: DueAt, today: NaiveDate) -> (String, Color32) {
         0 => GREEN,
         1 => ORANGE,
         2..=6 => PURPLE,
-        _ => MUTED,
+        _ => muted(),
     };
     (text, color)
 }
@@ -96,7 +96,7 @@ pub fn deadline_label(d: NaiveDate, today: NaiveDate) -> (String, Color32) {
         _ if diff < 0 => RED,
         0..=1 => ORANGE,
         2..=7 => PURPLE,
-        _ => MUTED,
+        _ => muted(),
     };
     (text, color)
 }
@@ -142,10 +142,10 @@ pub fn task_row(ui: &mut Ui, store: &Store, item: &Item, today: NaiveDate, o: &R
     let x_text = indent + 28.0;
     let wrap = (full_w - x_text - 8.0).max(60.0);
     let title_font = font(if o.compact { 13.5 } else { 14.0 });
-    let title = galley(ui, &item.content, title_font, TEXT, wrap);
+    let title = galley(ui, &item.content, title_font, text(), wrap);
     let desc_line = item.description.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
     let desc = (!desc_line.is_empty()).then(|| {
-        let mut job = LayoutJob::single_section(desc_line.clone(), TextFormat::simple(font(12.0), MUTED));
+        let mut job = LayoutJob::single_section(desc_line.clone(), TextFormat::simple(font(12.0), muted()));
         job.wrap.max_width = wrap;
         job.wrap.max_rows = 1;
         ui.painter().layout_job(job)
@@ -172,18 +172,18 @@ pub fn task_row(ui: &mut Ui, store: &Store, item: &Item, today: NaiveDate, o: &R
 
     theme::check_circle(&p, circle_c, 9.0, item.priority, over_circle, false);
     let mut y = rect.top() + pad;
-    p.galley(Pos2::new(rect.left() + x_text, y), title.clone(), TEXT);
+    p.galley(Pos2::new(rect.left() + x_text, y), title.clone(), text());
     y += title.size().y + 1.0;
     if let Some(d) = desc {
         let dh = d.size().y;
-        p.galley(Pos2::new(rect.left() + x_text, y), d, MUTED);
+        p.galley(Pos2::new(rect.left() + x_text, y), d, muted());
         y += dh;
     }
     if has_meta {
         let my = y + 9.5;
         let mut x = rect.left() + x_text;
         if !sub.is_empty() {
-            x = meta(&p, ui, x, my, None, &format!("⑂ 0/{}", sub.len()), MUTED);
+            x = meta(&p, ui, x, my, None, &format!("⑂ 0/{}", sub.len()), muted());
         }
         if o.show_due {
             if let Some(at) = item.due_at() {
@@ -196,7 +196,7 @@ pub fn task_row(ui: &mut Ui, store: &Store, item: &Item, today: NaiveDate, o: &R
             }
         }
         if store.reminders.values().any(|r| r.item_id == item.id) {
-            theme::icon(&p, Rect::from_center_size(Pos2::new(x + 4.0, my), Vec2::splat(12.0)), Icon::Alarm, MUTED);
+            theme::icon(&p, Rect::from_center_size(Pos2::new(x + 4.0, my), Vec2::splat(12.0)), Icon::Alarm, muted());
             x += 20.0;
         }
         if let Some(d) = item.deadline.as_ref().and_then(|d| d.day()) {
@@ -204,23 +204,23 @@ pub fn task_row(ui: &mut Ui, store: &Store, item: &Item, today: NaiveDate, o: &R
             x = meta(&p, ui, x, my, Some(Icon::Deadline), &t, c);
         }
         for l in &item.labels {
-            x = meta(&p, ui, x, my, Some(Icon::Tag), l, MUTED);
+            x = meta(&p, ui, x, my, Some(Icon::Tag), l, muted());
         }
         if o.show_project {
             let proj = store.projects.get(&item.project_id);
             let name = proj.map(|p| p.name.as_str()).unwrap_or("");
-            let col = proj.map(|p| named_color(&p.color)).unwrap_or(MUTED);
+            let col = proj.map(|p| named_color(&p.color)).unwrap_or(muted());
             let section = item.section_id.as_ref().and_then(|s| store.sections.get(s)).map(|s| format!(" / {}", s.name)).unwrap_or_default();
-            let g = galley_one(ui, &format!("{name}{section}"), font(12.0), MUTED);
+            let g = galley_one(ui, &format!("{name}{section}"), font(12.0), muted());
             let gx = rect.right() - 16.0 - g.size().x;
             // Skip the project when the row has no room left for it.
             if gx >= x {
-                p.galley(Pos2::new(gx, my - g.size().y / 2.0), g, MUTED);
+                p.galley(Pos2::new(gx, my - g.size().y / 2.0), g, muted());
                 p.text(Pos2::new(rect.right() - 6.0, my), Align2::CENTER_CENTER, "#", font(13.0), col);
             }
         }
     }
-    p.line_segment([Pos2::new(rect.left() + indent, rect.bottom()), Pos2::new(rect.right(), rect.bottom())], Stroke::new(1.0, LINE));
+    p.line_segment([Pos2::new(rect.left() + indent, rect.bottom()), Pos2::new(rect.right(), rect.bottom())], Stroke::new(1.0, line()));
     if hovered && !over_circle {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -247,7 +247,7 @@ pub fn task_menu(resp: &Response, item: &Item, today: NaiveDate, out: &mut Vec<A
             out.push(Action::Complete(item.id.clone()));
         }
         ui.separator();
-        ui.label(egui::RichText::new("Date").small().color(MUTED));
+        ui.label(egui::RichText::new("Date").small().color(muted()));
         ui.horizontal(|ui| {
             let next_week = today + chrono::Duration::days(7 - today.weekday().num_days_from_monday() as i64);
             for (label, d) in [("Today", Some(today)), ("Tomorrow", Some(today.succ_opt().unwrap())), ("Next week", Some(next_week)), ("No date", None)] {
@@ -257,7 +257,7 @@ pub fn task_menu(resp: &Response, item: &Item, today: NaiveDate, out: &mut Vec<A
                 }
             }
         });
-        ui.label(egui::RichText::new("Priority").small().color(MUTED));
+        ui.label(egui::RichText::new("Priority").small().color(muted()));
         ui.horizontal(|ui| {
             for (n, p) in [(1, 4u8), (2, 3), (3, 2), (4, 1)] {
                 let txt = egui::RichText::new(format!("P{n}")).color(priority_color(p));
@@ -281,12 +281,12 @@ pub fn add_row(ui: &mut Ui, defaults: AddDefaults, out: &mut Vec<Action>) {
     let p = ui.painter();
     let c = Pos2::new(rect.left() + 10.0, rect.center().y);
     if hovered {
-        p.circle_filled(c, 9.0, ACCENT);
+        p.circle_filled(c, 9.0, accent());
         theme::icon(p, Rect::from_center_size(c, Vec2::splat(12.0)), Icon::Plus, Color32::WHITE);
     } else {
-        theme::icon(p, Rect::from_center_size(c, Vec2::splat(14.0)), Icon::Plus, ACCENT);
+        theme::icon(p, Rect::from_center_size(c, Vec2::splat(14.0)), Icon::Plus, accent());
     }
-    p.text(Pos2::new(rect.left() + 28.0, rect.center().y), Align2::LEFT_CENTER, "Add task", font(14.0), if hovered { ACCENT_TEXT } else { MUTED });
+    p.text(Pos2::new(rect.left() + 28.0, rect.center().y), Align2::LEFT_CENTER, "Add task", font(14.0), if hovered { accent_text() } else { muted() });
     if resp.clicked() {
         out.push(Action::AddTask(defaults));
     }
@@ -297,13 +297,13 @@ pub fn group_header(ui: &mut Ui, title: &str, count: Option<usize>) {
     ui.add_space(14.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
     let p = ui.painter();
-    let g = galley_one(ui, title, bold_font(14.0), TEXT);
+    let g = galley_one(ui, title, bold_font(14.0), text());
     let w = g.size().x;
-    p.galley(Pos2::new(rect.left(), rect.center().y - g.size().y / 2.0), g, TEXT);
+    p.galley(Pos2::new(rect.left(), rect.center().y - g.size().y / 2.0), g, text());
     if let Some(n) = count {
-        p.text(Pos2::new(rect.left() + w + 8.0, rect.center().y), Align2::LEFT_CENTER, n.to_string(), font(12.0), MUTED);
+        p.text(Pos2::new(rect.left() + w + 8.0, rect.center().y), Align2::LEFT_CENTER, n.to_string(), font(12.0), muted());
     }
-    p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, LINE));
+    p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, line()));
 }
 
 /// A sidebar navigation row.
@@ -311,12 +311,12 @@ pub fn nav_row(ui: &mut Ui, ic: Icon, icon_color: Color32, label: &str, count: u
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
     let p = ui.painter();
     if selected {
-        p.rect_filled(rect, 6.0, SELECTED);
+        p.rect_filled(rect, 6.0, theme::selected());
     } else if resp.hovered() {
-        p.rect_filled(rect, 6.0, HOVER);
+        p.rect_filled(rect, 6.0, hover());
     }
-    let fg = if selected { ACCENT_TEXT } else { TEXT };
-    let ic_col = if selected { ACCENT_TEXT } else { icon_color };
+    let fg = if selected { accent_text() } else { text() };
+    let ic_col = if selected { accent_text() } else { icon_color };
     theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 16.0 + indent, rect.center().y), Vec2::splat(16.0)), ic, ic_col);
     let max_w = rect.width() - 64.0 - indent;
     let mut job = LayoutJob::single_section(label.to_string(), TextFormat::simple(font(14.0), fg));
@@ -325,7 +325,7 @@ pub fn nav_row(ui: &mut Ui, ic: Icon, icon_color: Color32, label: &str, count: u
     let g = ui.painter().layout_job(job);
     p.galley(Pos2::new(rect.left() + 34.0 + indent, rect.center().y - g.size().y / 2.0), g, fg);
     if count > 0 {
-        p.text(Pos2::new(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, count.to_string(), font(12.0), if selected { ACCENT_TEXT } else { FAINT });
+        p.text(Pos2::new(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, count.to_string(), font(12.0), if selected { accent_text() } else { faint() });
     }
     resp
 }
@@ -334,9 +334,9 @@ pub fn nav_row(ui: &mut Ui, ic: Icon, icon_color: Color32, label: &str, count: u
 pub fn icon_button(ui: &mut Ui, ic: Icon, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, HOVER);
+        ui.painter().rect_filled(rect, 6.0, hover());
     }
-    theme::icon(ui.painter(), rect, ic, if resp.hovered() { TEXT } else { MUTED });
+    theme::icon(ui.painter(), rect, ic, if resp.hovered() { text() } else { muted() });
     resp.on_hover_text(tip)
 }
 
@@ -354,7 +354,7 @@ pub fn task_block(ui: &mut Ui, rect: Rect, item: &Item, done: bool, today: Naive
         if rect.height() >= head + 16.0 {
             let end = t + chrono::Duration::minutes(d.minutes());
             let p = ui.painter_at(rect);
-            p.text(Pos2::new(rect.left() + 19.0, rect.top() + head + 1.0), Align2::LEFT_TOP, format!("{} – {}", fmt_time(t), fmt_time(end)), font(11.5), MUTED);
+            p.text(Pos2::new(rect.left() + 19.0, rect.top() + head + 1.0), Align2::LEFT_TOP, format!("{} – {}", fmt_time(t), fmt_time(end)), font(11.5), muted());
         }
     }
 }
@@ -374,24 +374,24 @@ fn task_card(ui: &mut Ui, rect: Rect, head: f32, item: &Item, done: bool, show_t
     let c = Pos2::new(rect.left() + 10.0, row.center().y);
     let over_circle = ui.ctx().pointer_hover_pos().is_some_and(|pt| (pt - c).length() < 9.0);
     if item.is_recurring() && !done {
-        theme::icon(&p, Rect::from_center_size(c, Vec2::splat(12.0)), Icon::Repeat, TEXT);
+        theme::icon(&p, Rect::from_center_size(c, Vec2::splat(12.0)), Icon::Repeat, text());
     } else {
         theme::check_circle(&p, c, 5.5, item.priority, over_circle, done);
     }
-    let text_col = if done { MUTED } else { TEXT };
+    let text_col = if done { muted() } else { text() };
     let mut right = rect.right() - 6.0;
     // Narrow chips keep the title and drop the time.
     if show_time && !done && rect.width() > 150.0 {
         if let Some(t) = item.due_at().and_then(|d| d.time) {
-            let g = galley_one(ui, &fmt_time(t), font(11.5), MUTED);
+            let g = galley_one(ui, &fmt_time(t), font(11.5), muted());
             right -= g.size().x;
-            p.galley(Pos2::new(right, row.center().y - g.size().y / 2.0), g, MUTED);
+            p.galley(Pos2::new(right, row.center().y - g.size().y / 2.0), g, muted());
             right -= 6.0;
         }
     }
     let mut fmt = TextFormat::simple(font(12.5), text_col);
     if done {
-        fmt.strikethrough = Stroke::new(1.0, MUTED);
+        fmt.strikethrough = Stroke::new(1.0, muted());
     }
     let mut job = LayoutJob::single_section(item.content.clone(), fmt);
     job.wrap.max_width = (right - rect.left() - 20.0).max(10.0);
@@ -435,20 +435,20 @@ pub fn event_interact(ui: &mut Ui, rect: Rect, ev: &Event, out: &mut Vec<Action>
 
 pub fn event_chip(ui: &mut Ui, rect: Rect, ev: &Event, out: &mut Vec<Action>) {
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 4.0, Color32::from_rgb(0x2b, 0x2b, 0x2b));
+    p.rect_filled(rect, 4.0, surface());
     p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, rect.height() - 6.0)), 1.0, event_color(ev));
     let mut right = rect.right() - 6.0;
     if !ev.all_day && rect.width() > 150.0 {
-        let g = galley_one(ui, &fmt_time(ev.start.time()), font(11.5), MUTED);
+        let g = galley_one(ui, &fmt_time(ev.start.time()), font(11.5), muted());
         right -= g.size().x;
-        p.galley(Pos2::new(right, rect.center().y - g.size().y / 2.0), g, MUTED);
+        p.galley(Pos2::new(right, rect.center().y - g.size().y / 2.0), g, muted());
         right -= 6.0;
     }
-    let mut job = LayoutJob::single_section(ev.title.clone(), TextFormat::simple(font(12.5), TEXT));
+    let mut job = LayoutJob::single_section(ev.title.clone(), TextFormat::simple(font(12.5), text()));
     job.wrap.max_width = (right - rect.left() - 12.0).max(10.0);
     job.wrap.max_rows = 1;
     let g = ui.painter().layout_job(job);
-    p.galley(Pos2::new(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, TEXT);
+    p.galley(Pos2::new(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, text());
     event_interact(ui, rect, ev, out);
 }
 
