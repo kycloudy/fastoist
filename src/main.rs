@@ -8,6 +8,7 @@ mod gcal;
 mod ics;
 mod model;
 mod pickers;
+mod settings;
 mod sound;
 mod theme;
 mod tray;

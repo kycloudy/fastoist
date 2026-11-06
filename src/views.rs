@@ -35,7 +35,7 @@ fn subtitle_count(ui: &mut Ui, n: usize) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
         theme::check_circle(ui.painter(), r.center(), 6.0, 1, true, false);
-        ui.label(egui::RichText::new(format!("{n} task{}", if n == 1 { "" } else { "s" })).color(MUTED).size(13.0));
+        ui.label(egui::RichText::new(format!("{n} task{}", if n == 1 { "" } else { "s" })).color(muted()).size(13.0));
     });
 }
 
@@ -112,16 +112,16 @@ fn today_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
         if !overdue.is_empty() {
             ui.add_space(14.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
-            ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "Overdue", bold_font(14.0), TEXT);
+            ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "Overdue", bold_font(14.0), text());
             let btn = Rect::from_min_max(Pos2::new(rect.right() - 90.0, rect.top()), rect.right_bottom());
             let r = ui.interact(btn, ui.scope_id().with("resched"), Sense::click());
-            ui.painter().text(btn.right_center(), Align2::RIGHT_CENTER, "Reschedule", font(13.0), if r.hovered() { ACCENT_TEXT } else { ACCENT });
+            ui.painter().text(btn.right_center(), Align2::RIGHT_CENTER, "Reschedule", font(13.0), if r.hovered() { accent_text() } else { accent() });
             if r.clicked() {
                 for it in &overdue {
                     out.push(Action::Schedule { id: it.id.clone(), date: Some(today), time: None });
                 }
             }
-            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, LINE));
+            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, line()));
             flat_rows(ui, store, &overdue, today, true, out);
         }
         let defaults = AddDefaults { due: Some(today), ..Default::default() };
@@ -178,7 +178,7 @@ fn filter_view(app: &mut App, id: &str, ui: &mut Ui, out: &mut Vec<Action>) {
     column(ui, "filter", |ui| {
         heading(ui, &name);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&query).color(MUTED).size(13.0).monospace());
+            ui.label(egui::RichText::new(&query).color(muted()).size(13.0).monospace());
             if loading {
                 ui.spinner();
             }
@@ -227,17 +227,17 @@ fn list_row(ui: &mut Ui, ic: Icon, col: egui::Color32, name: &str, n: usize, det
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
     let p = ui.painter();
     if resp.hovered() {
-        p.rect_filled(rect, 6.0, HOVER);
+        p.rect_filled(rect, 6.0, hover());
     }
     theme::icon(p, Rect::from_center_size(Pos2::new(rect.left() + 14.0, rect.center().y), Vec2::splat(16.0)), ic, col);
-    p.text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, name, font(14.0), TEXT);
+    p.text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, name, font(14.0), text());
     if !detail.is_empty() {
-        p.text(Pos2::new(rect.left() + 220.0, rect.center().y), Align2::LEFT_CENTER, detail, font(12.0), FAINT);
+        p.text(Pos2::new(rect.left() + 220.0, rect.center().y), Align2::LEFT_CENTER, detail, font(12.0), faint());
     }
     if n > 0 {
-        p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), font(12.0), FAINT);
+        p.text(Pos2::new(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), font(12.0), faint());
     }
-    p.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, LINE));
+    p.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, line()));
     resp
 }
 
@@ -305,11 +305,11 @@ fn completed_view(app: &mut App, ui: &mut Ui, out: &mut Vec<Action>) {
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
             let c = Pos2::new(rect.left() + 14.0, rect.center().y);
             theme::check_circle(ui.painter(), c, 8.0, it.priority, resp.hovered(), true);
-            ui.painter().text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, &it.content, font(14.0), MUTED);
+            ui.painter().text(Pos2::new(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, &it.content, font(14.0), muted());
             if resp.on_hover_text("Mark as not done").clicked() {
                 out.push(Action::Uncomplete(it.id.clone()));
             }
-            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, LINE));
+            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, line()));
         }
     });
 }

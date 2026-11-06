@@ -4,20 +4,213 @@ use eframe::egui::{
     self, epaint::PathShape, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Painter, Pos2, Rect,
     Stroke, StrokeKind, Vec2,
 };
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 
-pub const BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
-pub const SURFACE: Color32 = Color32::from_rgb(0x28, 0x28, 0x28);
-pub const POPUP: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
-pub const HOVER: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-pub const LINE: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-pub const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
-pub const MUTED: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
-pub const FAINT: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x6b);
-pub const ACCENT: Color32 = Color32::from_rgb(0xdc, 0x4c, 0x3e);
-pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xff, 0x70, 0x66);
-pub const SELECTED: Color32 = Color32::from_rgb(0x47, 0x24, 0x22);
+/// The light or dark base of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Mode {
+    #[default]
+    Dark,
+    Midnight,
+    Light,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Dark, Mode::Midnight, Mode::Light];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Dark => "Dark",
+            Mode::Midnight => "Midnight",
+            Mode::Light => "Light",
+        }
+    }
+}
+
+/// The color of buttons, links, and the selected row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Accent {
+    #[default]
+    Red,
+    Orange,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 7] = [Accent::Red, Accent::Orange, Accent::Green, Accent::Teal, Accent::Blue, Accent::Purple, Accent::Pink];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Accent::Red => "Red",
+            Accent::Orange => "Orange",
+            Accent::Green => "Green",
+            Accent::Teal => "Teal",
+            Accent::Blue => "Blue",
+            Accent::Purple => "Purple",
+            Accent::Pink => "Pink",
+        }
+    }
+
+    /// The solid color, and a lighter one for text on dark backgrounds.
+    pub const fn colors(self) -> (Color32, Color32) {
+        let (a, t) = match self {
+            Accent::Red => (0xdc4c3e, 0xff7066),
+            Accent::Orange => (0xe8780c, 0xffa04d),
+            Accent::Green => (0x2e9a48, 0x5fd17c),
+            Accent::Teal => (0x158fad, 0x4cc3e0),
+            Accent::Blue => (0x3c6fe8, 0x7aa2ff),
+            Accent::Purple => (0x8a4fe0, 0xb48cff),
+            Accent::Pink => (0xd1478c, 0xff85bf),
+        };
+        (hex(a), hex(t))
+    }
+}
+
+const fn hex(h: u32) -> Color32 {
+    Color32::from_rgb((h >> 16) as u8, (h >> 8) as u8, h as u8)
+}
+
+/// Every color the app paints with. `set` swaps it when the theme changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    pub mode: Mode,
+    pub bg: Color32,
+    pub sidebar: Color32,
+    pub surface: Color32,
+    pub popup: Color32,
+    pub hover: Color32,
+    pub line: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub faint: Color32,
+    pub accent: Color32,
+    pub accent_text: Color32,
+    pub selected: Color32,
+    /// Text fields and other sunken areas.
+    pub sunken: Color32,
+    /// Toasts, badges, and controls that sit on a popup.
+    pub raised: Color32,
+    pub raised_hover: Color32,
+}
+
+impl Palette {
+    pub const fn new(mode: Mode, accent: Accent) -> Self {
+        let (a, t) = accent.colors();
+        let [ar, ag, ab, _] = a.to_array();
+        match mode {
+            Mode::Dark => Self {
+                mode,
+                bg: hex(0x1e1e1e),
+                sidebar: hex(0x242424),
+                surface: hex(0x282828),
+                popup: hex(0x2a2a2a),
+                hover: hex(0x303030),
+                line: hex(0x333333),
+                text: hex(0xe6e6e6),
+                muted: hex(0x9a9a9a),
+                faint: hex(0x6b6b6b),
+                accent: a,
+                accent_text: t,
+                selected: mix(hex(0x1e1e1e), ar, ag, ab, 0.28),
+                sunken: hex(0x1a1a1a),
+                raised: hex(0x333333),
+                raised_hover: hex(0x444444),
+            },
+            Mode::Midnight => Self {
+                mode,
+                bg: hex(0x0d0d0d),
+                sidebar: hex(0x141414),
+                surface: hex(0x181818),
+                popup: hex(0x1a1a1a),
+                hover: hex(0x222222),
+                line: hex(0x262626),
+                text: hex(0xe6e6e6),
+                muted: hex(0x8f8f8f),
+                faint: hex(0x5e5e5e),
+                accent: a,
+                accent_text: t,
+                selected: mix(hex(0x0d0d0d), ar, ag, ab, 0.28),
+                sunken: hex(0x080808),
+                raised: hex(0x262626),
+                raised_hover: hex(0x343434),
+            },
+            Mode::Light => Self {
+                mode,
+                bg: hex(0xffffff),
+                sidebar: hex(0xfcfaf8),
+                surface: hex(0xf5f5f5),
+                popup: hex(0xffffff),
+                hover: hex(0xeeeeee),
+                line: hex(0xe6e6e6),
+                text: hex(0x202020),
+                muted: hex(0x666666),
+                faint: hex(0x999999),
+                accent: a,
+                // Text needs the darker shade to read on white.
+                accent_text: a,
+                selected: mix(hex(0xffffff), ar, ag, ab, 0.14),
+                sunken: hex(0xf7f7f7),
+                raised: hex(0xebebeb),
+                raised_hover: hex(0xdddddd),
+            },
+        }
+    }
+
+    pub fn dark(&self) -> bool {
+        self.mode != Mode::Light
+    }
+}
+
+/// Blend `base` toward (r, g, b) by `t`.
+const fn mix(base: Color32, r: u8, g: u8, b: u8, t: f32) -> Color32 {
+    let [br, bg, bb, _] = base.to_array();
+    Color32::from_rgb(lerp(br, r, t), lerp(bg, g, t), lerp(bb, b, t))
+}
+
+const fn lerp(x: u8, y: u8, t: f32) -> u8 {
+    (x as f32 + (y as f32 - x as f32) * t) as u8
+}
+
+static PALETTE: RwLock<Palette> = RwLock::new(Palette::new(Mode::Dark, Accent::Red));
+
+pub fn palette() -> Palette {
+    *PALETTE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Switch the theme for the whole app, including egui's own widgets.
+pub fn set(ctx: &egui::Context, mode: Mode, accent: Accent) {
+    let p = Palette::new(mode, accent);
+    *PALETTE.write().unwrap_or_else(|e| e.into_inner()) = p;
+    // Fill both slots so a change in the Windows light/dark setting cannot swap in egui's defaults.
+    let v = visuals(&p);
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
+    let sys = if p.dark() { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(sys));
+    ctx.request_repaint();
+}
+
+pub fn bg() -> Color32 { palette().bg }
+pub fn sidebar() -> Color32 { palette().sidebar }
+pub fn surface() -> Color32 { palette().surface }
+pub fn popup() -> Color32 { palette().popup }
+pub fn hover() -> Color32 { palette().hover }
+pub fn line() -> Color32 { palette().line }
+pub fn text() -> Color32 { palette().text }
+pub fn muted() -> Color32 { palette().muted }
+pub fn faint() -> Color32 { palette().faint }
+pub fn accent() -> Color32 { palette().accent }
+pub fn accent_text() -> Color32 { palette().accent_text }
+pub fn selected() -> Color32 { palette().selected }
+pub fn sunken() -> Color32 { palette().sunken }
+pub fn raised() -> Color32 { palette().raised }
+pub fn raised_hover() -> Color32 { palette().raised_hover }
+
 pub const GREEN: Color32 = Color32::from_rgb(0x25, 0xb8, 0x4c);
 pub const ORANGE: Color32 = Color32::from_rgb(0xff, 0x9a, 0x14);
 pub const PURPLE: Color32 = Color32::from_rgb(0xa9, 0x70, 0xff);
@@ -37,12 +230,12 @@ pub fn priority_color(p: u8) -> Color32 {
 
 /// Background for a calendar chip of the given priority.
 pub fn chip_fill(p: u8) -> Color32 {
-    match p {
-        4 => Color32::from_rgb(0x5a, 0x2a, 0x27),
-        3 => Color32::from_rgb(0x55, 0x3b, 0x17),
-        2 => Color32::from_rgb(0x1f, 0x3a, 0x60),
-        _ => Color32::from_rgb(0x33, 0x33, 0x33),
+    let pal = palette();
+    if p <= 1 {
+        return pal.raised;
     }
+    let [r, g, b, _] = priority_color(p).to_array();
+    mix(pal.bg, r, g, b, if pal.dark() { 0.3 } else { 0.2 })
 }
 
 pub fn named_color(name: &str) -> Color32 {
@@ -84,7 +277,7 @@ pub fn bold_font(size: f32) -> FontId {
 }
 
 /// Use Segoe UI on Windows so text looks native; fall back to egui's fonts elsewhere.
-pub fn install(ctx: &egui::Context) {
+pub fn install(ctx: &egui::Context, mode: Mode, accent: Accent) {
     let mut fonts = FontDefinitions::default();
     let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_default();
     let load = |file: &str| std::fs::read(format!("{dir}\\{file}")).ok();
@@ -113,7 +306,7 @@ pub fn install(ctx: &egui::Context) {
     fonts.families.insert(bold(), b);
     ctx.set_fonts(fonts);
 
-    ctx.set_visuals(visuals());
+    set(ctx, mode, accent);
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = Vec2::new(8.0, 6.0);
         s.spacing.button_padding = Vec2::new(10.0, 5.0);
@@ -127,32 +320,32 @@ pub fn install(ctx: &egui::Context) {
     ctx.options_mut(|o| o.input_options.line_scroll_speed = 110.0);
 }
 
-fn visuals() -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = POPUP;
-    v.extreme_bg_color = Color32::from_rgb(0x1a, 0x1a, 0x1a);
-    v.faint_bg_color = SURFACE;
-    v.window_stroke = Stroke::new(1.0, LINE);
+fn visuals(p: &Palette) -> egui::Visuals {
+    let mut v = if p.dark() { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = p.bg;
+    v.window_fill = p.popup;
+    v.extreme_bg_color = p.sunken;
+    v.faint_bg_color = p.surface;
+    v.window_stroke = Stroke::new(1.0, p.line);
     v.window_corner_radius = CornerRadius::same(10);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.override_text_color = Some(TEXT);
-    v.selection.bg_fill = ACCENT.gamma_multiply(0.6);
-    v.selection.stroke = Stroke::new(1.0, ACCENT_TEXT);
-    v.hyperlink_color = ACCENT_TEXT;
+    v.override_text_color = Some(p.text);
+    v.selection.bg_fill = p.accent.gamma_multiply(0.6);
+    v.selection.stroke = Stroke::new(1.0, p.accent_text);
+    v.hyperlink_color = p.accent_text;
     for w in [&mut v.widgets.inactive, &mut v.widgets.noninteractive] {
         w.bg_stroke = Stroke::NONE;
         w.corner_radius = CornerRadius::same(6);
     }
-    v.widgets.inactive.weak_bg_fill = SURFACE;
-    v.widgets.inactive.bg_fill = SURFACE;
-    v.widgets.hovered.weak_bg_fill = HOVER;
-    v.widgets.hovered.bg_fill = HOVER;
+    v.widgets.inactive.weak_bg_fill = p.surface;
+    v.widgets.inactive.bg_fill = p.surface;
+    v.widgets.hovered.weak_bg_fill = p.hover;
+    v.widgets.hovered.bg_fill = p.hover;
     v.widgets.hovered.bg_stroke = Stroke::NONE;
     v.widgets.hovered.corner_radius = CornerRadius::same(6);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(0x38, 0x38, 0x38);
+    v.widgets.active.weak_bg_fill = p.raised;
     v.widgets.active.corner_radius = CornerRadius::same(6);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.line);
     v
 }
 
@@ -186,6 +379,10 @@ pub enum Icon {
     Sync,
     Check,
     Panel,
+    Info,
+    Keyboard,
+    Palette,
+    Tray,
     Alarm,
     Send,
 }
@@ -337,6 +534,31 @@ pub fn icon(p: &Painter, r: Rect, icon: Icon, color: Color32) {
         Icon::Check => {
             p.add(PathShape::line(vec![at(-3.5, 0.0), at(-1.0, 2.5), at(3.5, -2.5)], Stroke::new(1.6, color)));
         }
+        Icon::Info => {
+            p.circle_stroke(c, 6.5 * k, s);
+            p.circle_filled(at(0.0, -3.2), 0.9 * k, color);
+            p.line_segment([at(0.0, -0.8), at(0.0, 3.8)], Stroke::new(1.5, color));
+        }
+        Icon::Keyboard => {
+            p.rect_stroke(rr(-7.0, -4.5, 7.0, 4.5), 1.5, s, StrokeKind::Middle);
+            for x in [-4.0, -1.3, 1.3, 4.0] {
+                p.circle_filled(at(x, -1.5), 0.7 * k, color);
+            }
+            p.line_segment([at(-3.5, 1.8), at(3.5, 1.8)], s);
+        }
+        Icon::Palette => {
+            p.circle_stroke(c, 6.5 * k, s);
+            for (x, y) in [(-3.0, -2.0), (0.0, -3.8), (3.0, -2.0)] {
+                p.circle_filled(at(x, y), 1.0 * k, color);
+            }
+            p.circle_stroke(at(1.8, 2.6), 1.6 * k, s);
+        }
+        Icon::Tray => {
+            p.rect_stroke(rr(-7.0, -5.5, 7.0, 5.5), 1.5, s, StrokeKind::Middle);
+            p.line_segment([at(-7.0, 2.5), at(7.0, 2.5)], s);
+            p.circle_filled(at(4.2, 4.0), 0.9 * k, color);
+            p.circle_filled(at(1.6, 4.0), 0.9 * k, color);
+        }
     }
 }
 
@@ -345,7 +567,7 @@ pub fn check_circle(p: &Painter, center: Pos2, radius: f32, priority: u8, hovere
     let col = priority_color(priority);
     if done {
         p.circle_filled(center, radius, col.gamma_multiply(0.8));
-        icon(p, Rect::from_center_size(center, Vec2::splat(radius * 2.0)), Icon::Check, BG);
+        icon(p, Rect::from_center_size(center, Vec2::splat(radius * 2.0)), Icon::Check, bg());
         return;
     }
     if priority > 1 {
