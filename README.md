@@ -4,7 +4,7 @@ A fast, native Todoist client for Windows. One 9 MB `.exe`, no installer, no bro
 
 ## Get it
 
-Download `fastoist.exe` from the latest [Actions build](../../actions/workflows/build.yml) (artifact `fastoist-windows-x64`) or from [Releases](../../releases). Put it anywhere and run it.
+Download `fastoist.exe` from [Releases](../../releases). Put it anywhere and run it.
 
 ## Set up
 
