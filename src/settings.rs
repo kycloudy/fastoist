@@ -53,8 +53,7 @@ pub const SHORTCUTS: &[(&str, &[&str])] = &[
     ("Undo", &["Ctrl", "Z"]),
     ("Back", &["Alt", "Left"]),
     ("Forward", &["Alt", "Right"]),
-    ("Zoom the week view", &["Ctrl", "Scroll"]),
-    ("Change week", &["Shift", "Scroll"]),
+    ("Scroll days in the week view", &["Shift", "Scroll", "or", "Middle-click"]),
     ("Close dialog", &["Esc"]),
 ];
 

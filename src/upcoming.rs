@@ -5,44 +5,119 @@ use crate::model::{Event, Item, Store};
 use crate::theme::{Icon, *};
 use crate::widgets::{self, task_chip, Action, AddDefaults, EventDrag, RowOpts, TaskDrag};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime, Timelike, Weekday};
-use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align2, Color32, PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use std::time::Instant;
 
 const CHIP_H: f32 = 22.0;
 /// Tallest an hour can be in the week grid, in points.
 const MAX_HOUR_H: f32 = 160.0;
 
-/// Scroll position, zoom, and sideways swipe state for the week grid.
+/// Least height of an hour in the week grid, in points.
+const MIN_HOUR_H: f32 = 10.0;
+
+/// Scroll position, zoom, and sideways scroll state for the week grid.
 #[derive(Default)]
 pub struct WeekNav {
     pub offset: f32,
     drag_zoom: Option<f32>,
     zoom_dirty: bool,
-    swipe: f32,
-    last_input: Option<std::time::Instant>,
-    last_flip: Option<std::time::Instant>,
+    /// First day shown after sideways scrolling. Cleared when the anchor moves some other way.
+    start: Option<NaiveDate>,
+    /// Part of a day scrolled past the first day, from 0 to 1.
+    frac: f32,
+    pan: Option<Pan>,
+    last_wheel: Option<Instant>,
+}
+
+/// Middle-click autoscroll. Hold the wheel and move, or click it once and move. Any click stops it.
+struct Pan {
+    origin: Pos2,
+    at: Instant,
+    sticky: bool,
 }
 
 impl WeekNav {
-    /// Add sideways scroll. Returns +1 for next week or -1 for previous week once the swipe is long enough.
-    /// One swipe moves one week: after a move, input must pause before the next one counts.
-    pub fn swipe(&mut self, dx: f32, now: std::time::Instant) -> Option<i64> {
-        let gap = self.last_input.map(|t| now.duration_since(t).as_secs_f32()).unwrap_or(1.0);
-        self.last_input = Some(now);
-        if gap > 0.3 {
-            self.swipe = 0.0;
+    /// Apply Shift+scroll, sideways swipes, and middle-click autoscroll over `area`.
+    /// Returns the first day shown and the part of a day scrolled past it.
+    fn days(&mut self, ui: &Ui, area: Rect, col_w: f32, anchor: &mut NaiveDate, start_day: u8) -> (NaiveDate, f32) {
+        if self.start != Some(*anchor) {
+            self.start = None;
+            self.frac = 0.0;
         }
-        if self.last_flip.is_some_and(|t| now.duration_since(t).as_secs_f32() < 1.0) && gap <= 0.3 {
-            return None;
+        let now = Instant::now();
+        let (wheel_x, ptr, dt, mid_down, mid_up, other_down) = ui.input(|i| {
+            let p = &i.pointer;
+            let other = p.button_pressed(PointerButton::Primary) || p.button_pressed(PointerButton::Secondary);
+            (i.smooth_scroll_delta.x, p.hover_pos(), i.stable_dt.min(0.1), p.button_pressed(PointerButton::Middle), p.button_released(PointerButton::Middle), other)
+        });
+        let over = ptr.is_some_and(|p| area.contains(p));
+        let mut moved = 0.0;
+
+        let mut stop = false;
+        if let Some(pan) = &mut self.pan {
+            if other_down || (mid_down && pan.sticky) {
+                stop = true;
+            } else if mid_up && !pan.sticky {
+                let still = ptr.is_some_and(|p| (p.x - pan.origin.x).abs() < 8.0);
+                if still && now.duration_since(pan.at).as_secs_f32() < 0.3 {
+                    pan.sticky = true;
+                } else {
+                    stop = true;
+                }
+            }
+        } else if let (true, true, Some(p)) = (mid_down, over, ptr) {
+            self.pan = Some(Pan { origin: p, at: now, sticky: false });
         }
-        self.swipe += dx;
-        if self.swipe.abs() < 40.0 {
-            return None;
+        if stop {
+            self.pan = None;
         }
-        let dir = if self.swipe > 0.0 { -1 } else { 1 };
-        self.swipe = 0.0;
-        self.last_flip = Some(now);
-        Some(dir)
+        if let (Some(pan), Some(p)) = (&self.pan, ptr) {
+            let dx = p.x - pan.origin.x;
+            let speed = (dx.abs() - 10.0).max(0.0) * dx.signum() * 5.0;
+            moved += speed * dt / col_w;
+            pan_marker(ui, pan.origin);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            ui.ctx().request_repaint();
+        }
+
+        if over && wheel_x != 0.0 {
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta.x = 0.0);
+            moved -= wheel_x / col_w;
+            self.last_wheel = Some(now);
+        }
+
+        // Settle on a whole day once the scrolling stops.
+        let mut frac = self.frac + moved;
+        let idle = self.pan.is_none() && self.last_wheel.is_none_or(|t| now.duration_since(t).as_secs_f32() > 0.15);
+        if idle && frac != 0.0 {
+            let target = frac.round();
+            frac += (target - frac) * (1.0 - (-dt * 14.0).exp());
+            if (target - frac).abs() < 0.002 {
+                frac = target;
+            }
+            ui.ctx().request_repaint();
+        }
+        if frac != self.frac {
+            let whole = frac.floor();
+            let start = self.start.unwrap_or_else(|| week_start(*anchor, start_day)) + Duration::days(whole as i64);
+            self.frac = frac - whole;
+            self.start = Some(start);
+            *anchor = start;
+        }
+        (self.start.unwrap_or_else(|| week_start(*anchor, start_day)), self.frac)
     }
+}
+
+/// Mark where middle-click autoscroll began.
+fn pan_marker(ui: &Ui, at: Pos2) {
+    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("week_pan")));
+    p.circle(at, 13.0, surface(), Stroke::new(1.0, line()));
+    for s in [-1.0, 1.0] {
+        let tip = at + Vec2::new(s * 8.0, 0.0);
+        let back = at + Vec2::new(s * 3.0, 0.0);
+        p.add(egui::Shape::convex_polygon(vec![tip, back + Vec2::new(0.0, -4.0), back + Vec2::new(0.0, 4.0)], muted(), Stroke::NONE));
+    }
+    p.circle_filled(at, 1.5, muted());
 }
 
 fn week_start(d: NaiveDate, start_day: u8) -> NaiveDate {
@@ -287,33 +362,44 @@ fn lanes(spans: &[(f32, f32)]) -> (Vec<usize>, usize) {
 }
 
 fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut Vec<Action>) {
-    let start = week_start(app.anchor, start_day);
-    app.want_completed(start, start + Duration::days(6));
-    let scroll_now = std::mem::take(&mut app.scroll_week);
-    let store = &app.store;
     let gutter = 56.0;
     let full = ui.available_rect_before_wrap();
     let col_w = (full.width() - gutter - 12.0) / 7.0;
-    let col_x = |i: i64| full.left() + gutter + i as f32 * col_w;
+    let (start, frac) = app.week_nav.days(ui, full, col_w, &mut app.anchor, start_day);
+    // One more column shows while a day is part way past the left edge.
+    let cols: i64 = if frac > 0.0 { 8 } else { 7 };
+    app.want_completed(start, start + Duration::days(cols - 1));
+    let scroll_now = std::mem::take(&mut app.scroll_week);
+    let store = &app.store;
+    let col_x = |i: i64| full.left() + gutter + (i as f32 - frac) * col_w;
+    let days_x = (full.left() + gutter, full.left() + gutter + 7.0 * col_w);
+    let clip = |ui: &mut Ui, top: f32, bottom: f32| {
+        let r = Rect::from_x_y_ranges(days_x.0..=days_x.1, top..=bottom);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+        child.shrink_clip_rect(r);
+        child
+    };
 
     // Day headers.
     let head_h = 26.0;
-    for i in 0..7 {
+    let mut days = clip(ui, full.top(), full.bottom());
+    let ui_days = &mut days;
+    for i in 0..cols {
         let d = start + Duration::days(i);
         let r = Rect::from_min_size(Pos2::new(col_x(i), full.top()), Vec2::new(col_w, head_h));
         let txt = format!("{} {}", d.format("%a"), d.day());
         if d == today {
-            let g = ui.painter().layout_no_wrap(txt, bold_font(13.0), Color32::WHITE);
+            let g = ui_days.painter().layout_no_wrap(txt, bold_font(13.0), Color32::WHITE);
             let br = Rect::from_center_size(r.center(), g.size() + Vec2::new(12.0, 4.0));
-            ui.painter().rect_filled(br, 4.0, accent());
-            ui.painter().galley(br.min + Vec2::new(6.0, 2.0), g, Color32::WHITE);
+            ui_days.painter().rect_filled(br, 4.0, accent());
+            ui_days.painter().galley(br.min + Vec2::new(6.0, 2.0), g, Color32::WHITE);
         } else {
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, font(13.0), muted());
+            ui_days.painter().text(r.center(), Align2::CENTER_CENTER, txt, font(13.0), muted());
         }
     }
 
     // All-day row.
-    let all_day: Vec<(Vec<&Item>, Vec<&Item>, Vec<&Event>)> = (0..7)
+    let all_day: Vec<(Vec<&Item>, Vec<&Item>, Vec<&Event>)> = (0..cols)
         .map(|i| {
             let d = start + Duration::days(i);
             let open = tasks_on(store, d).into_iter().filter(|t| t.due_at().and_then(|a| a.time).is_none()).collect();
@@ -326,29 +412,29 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
     let ad_h = rows as f32 * (CHIP_H + 2.0) + 6.0;
     let ad_top = full.top() + head_h;
     ui.painter().text(Pos2::new(full.left() + gutter - 8.0, ad_top + 12.0), Align2::RIGHT_CENTER, "All day", font(11.5), muted());
-    for i in 0..7 {
+    for i in 0..cols {
         let d = start + Duration::days(i);
         let cell = Rect::from_min_size(Pos2::new(col_x(i), ad_top), Vec2::new(col_w, ad_h));
-        drop_zone(ui, cell, egui::Id::unique(("adcell", d)), d, None, out);
+        drop_zone(ui_days, cell, egui::Id::unique(("adcell", d)), d, None, out);
         let mut y = ad_top + 2.0;
         let (open, done, ev) = &all_day[i as usize];
         let chip = |y: f32| Rect::from_min_size(Pos2::new(cell.left() + 2.0, y), Vec2::new(col_w - 4.0, CHIP_H));
         for it in done.iter().take(rows) {
-            task_chip(ui, chip(y), it, true, false, today, out);
+            task_chip(ui_days, chip(y), it, true, false, today, out);
             y += CHIP_H + 2.0;
         }
         for it in open {
             if y + CHIP_H > ad_top + ad_h {
                 break;
             }
-            task_chip(ui, chip(y), it, false, false, today, out);
+            task_chip(ui_days, chip(y), it, false, false, today, out);
             y += CHIP_H + 2.0;
         }
         for e in ev {
             if y + CHIP_H > ad_top + ad_h {
                 break;
             }
-            widgets::event_chip(ui, chip(y), e, out);
+            widgets::event_chip(ui_days, chip(y), e, out);
             y += CHIP_H + 2.0;
         }
     }
@@ -356,30 +442,13 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
     ui.painter().line_segment([Pos2::new(full.left(), full.top() + used), Pos2::new(full.right(), full.top() + used)], Stroke::new(1.0, line()));
     ui.allocate_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), used + 1.0)), Sense::hover());
 
-    // Zoom: scroll or drag on the hour bar, or Ctrl+scroll anywhere. Shift+scroll or a sideways swipe changes the week.
+    // Zoom: drag the hour bar. The zoom stays as set, also when the window changes size.
     let body = ui.available_rect_before_wrap();
-    let fit = (body.height() / 24.0).max(10.0);
-    let old_h = app.cfg.hour_h.clamp(fit, MAX_HOUR_H);
-    let hour_bar = Rect::from_min_max(body.min, Pos2::new(body.left() + gutter, body.bottom()));
-    let (wheel, zoom, ptr) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
-    let over = ptr.filter(|p| body.contains(*p));
-    let mut factor = app.week_nav.drag_zoom.take().unwrap_or(1.0);
-    if over.is_some() {
-        if zoom != 1.0 {
-            factor *= zoom;
-        } else if over.is_some_and(|p| hour_bar.contains(p)) && wheel.y != 0.0 {
-            factor *= (wheel.y / 250.0).exp();
-            ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
-        }
-        if wheel.x != 0.0 {
-            ui.input_mut(|i| i.smooth_scroll_delta.x = 0.0);
-            if let Some(dir) = app.week_nav.swipe(wheel.x, std::time::Instant::now()) {
-                app.anchor += Duration::days(7 * dir);
-                app.want_completed(week_start(app.anchor, start_day), week_start(app.anchor, start_day) + Duration::days(6));
-            }
-        }
-    }
-    let hour_h = (old_h * factor).clamp(fit, MAX_HOUR_H);
+    let fit = (body.height() / 24.0).max(MIN_HOUR_H);
+    let old_h = app.cfg.hour_h.clamp(MIN_HOUR_H, MAX_HOUR_H);
+    let over = ui.input(|i| i.pointer.hover_pos()).filter(|p| body.contains(*p));
+    let factor = app.week_nav.drag_zoom.take().unwrap_or(1.0);
+    let hour_h = if factor == 1.0 { old_h } else { (old_h * factor).clamp(fit.min(old_h), MAX_HOUR_H) };
     let mut sa = egui::ScrollArea::vertical().id_salt("week").auto_shrink([false, false]);
     if scroll_now {
         let now = Local::now().time();
@@ -397,7 +466,6 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
     } else if std::mem::take(&mut app.week_nav.zoom_dirty) {
         app.save_config();
     }
-    let start = week_start(app.anchor, start_day);
     let store = &app.store;
     let label_every = if hour_h >= 24.0 { 1 } else if hour_h >= 14.0 { 2 } else { 3 };
     let shown = sa.show(ui, |ui| {
@@ -406,6 +474,9 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
         let bar = bar.on_hover_cursor(egui::CursorIcon::ResizeVertical);
         let drag_zoom = if bar.dragged() { (-bar.drag_delta().y / 120.0).exp() } else { 1.0 };
         let p = ui.painter().clone();
+        let mut days = clip(ui, grid.top(), grid.bottom());
+        let ui_days = &mut days;
+        let dp = ui_days.painter().clone();
         for h in 0..24 {
             let y = grid.top() + h as f32 * hour_h;
             p.line_segment([Pos2::new(grid.left() + gutter, y), Pos2::new(grid.right(), y)], Stroke::new(1.0, line()));
@@ -414,18 +485,18 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                 p.text(Pos2::new(grid.left() + gutter - 8.0, y), Align2::RIGHT_CENTER, widgets::fmt_time(t), font(11.5), muted());
             }
         }
-        for i in 0..7 {
-            let x = grid.left() + gutter + i as f32 * col_w;
-            p.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0, line()));
+        for i in 0..cols {
+            let x = col_x(i);
+            dp.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0, line()));
         }
-        for i in 0..7 {
+        for i in 0..cols {
             let d = start + Duration::days(i);
-            let x = grid.left() + gutter + i as f32 * col_w;
+            let x = col_x(i);
             // Drop zones per 30 minutes.
             for slot in 0..48 {
                 let r = Rect::from_min_size(Pos2::new(x, grid.top() + slot as f32 * hour_h / 2.0), Vec2::new(col_w, hour_h / 2.0));
                 let t = NaiveTime::from_hms_opt(slot / 2, (slot % 2) * 30, 0).unwrap();
-                drop_zone(ui, r, egui::Id::unique(("slot", d, slot)), d, Some(t), out);
+                drop_zone(ui_days, r, egui::Id::unique(("slot", d, slot)), d, Some(t), out);
             }
             let y_of = |t: NaiveTime| grid.top() + (t.num_seconds_from_midnight() as f32 / 3600.0) * hour_h;
 
@@ -455,13 +526,13 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                 match b {
                     Block::Task(it, done) => {
                         if r.height() < CHIP_H + 8.0 {
-                            task_chip(ui, Rect::from_min_size(r.min, Vec2::new(r.width(), r.height().max(CHIP_H))), it, *done, true, today, out);
+                            task_chip(ui_days, Rect::from_min_size(r.min, Vec2::new(r.width(), r.height().max(CHIP_H))), it, *done, true, today, out);
                         } else {
-                            widgets::task_block(ui, r, it, *done, today, out);
+                            widgets::task_block(ui_days, r, it, *done, today, out);
                         }
                     }
                     Block::Ev(e) => {
-                        let painter = ui.painter_at(r);
+                        let painter = ui_days.painter_at(r);
                         painter.rect_filled(r, 4.0, surface());
                         painter.rect_filled(Rect::from_min_size(r.min + Vec2::new(3.0, 3.0), Vec2::new(2.5, r.height() - 6.0)), 1.0, widgets::event_color(e));
                         let g = painter.layout(e.title.clone(), bold_font(12.0), text(), r.width() - 14.0);
@@ -470,14 +541,16 @@ fn week(app: &mut App, ui: &mut Ui, today: NaiveDate, start_day: u8, out: &mut V
                         if r.height() > th + 22.0 {
                             painter.text(r.min + Vec2::new(10.0, 6.0 + th), Align2::LEFT_TOP, format!("{}–{}", widgets::fmt_time(e.start.time()), widgets::fmt_time(e.end.time())), font(11.5), muted());
                         }
-                        widgets::event_interact(ui, r, e, out);
+                        widgets::event_interact(ui_days, r, e, out);
                     }
                 }
             }
             if d == today {
                 let y = y_of(Local::now().time());
-                p.line_segment([Pos2::new(x, y), Pos2::new(x + col_w, y)], Stroke::new(2.0, accent()));
-                p.circle_filled(Pos2::new(x, y), 4.0, accent());
+                dp.line_segment([Pos2::new(x, y), Pos2::new(x + col_w, y)], Stroke::new(2.0, accent()));
+                if x >= days_x.0 - 0.5 {
+                    p.circle_filled(Pos2::new(x, y), 4.0, accent());
+                }
             }
         }
         drag_zoom
